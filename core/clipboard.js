@@ -25,6 +25,16 @@ import { browserAsyncClipboardSupport } from './util/browser.js';
 const ENTRY_CONTROLLER_PRIORITY_MS = 5000;
 const LOCAL_INJECTION_ECHO_MS = 5000;
 
+// Unicode clipboard text bypasses legacy RFB ClientCutText through a same-origin
+// HTTP endpoint backed by NewHome's UTF-8/Base64 clipboard bridge. ASCII keeps
+// using the existing RFB path unchanged. The HTTP path is intentionally best
+// effort: if NewHome is unavailable we immediately fall back to RFB.
+const NEWHOME_CLIPBOARD_PATH = '/newhome-clipboard';
+const NEWHOME_CLIPBOARD_TIMEOUT_MS = 750;
+// The chroot bridge polls the NewHome clipboard roughly every 350 ms. Give it
+// one polling interval before synthesizing Ctrl+V so X11 consumes the new text.
+const NEWHOME_CLIPBOARD_APPLY_DELAY_MS = 450;
+
 export default class AsyncClipboard {
     constructor(target) {
         this._target = target || null;
@@ -118,6 +128,70 @@ export default class AsyncClipboard {
         }
     }
 
+    _hasNonAscii(text) {
+        return typeof text === 'string' && /[^\x00-\x7f]/.test(text);
+    }
+
+    _normalizeRemoteText(text) {
+        if (typeof text !== 'string' || !this._hasNonAscii(text)) return text;
+
+        // Standard RFB ServerCutText is historically an 8-bit string. x11vnc
+        // commonly forwards UTF-8 bytes through that field unchanged, which
+        // noVNC then exposes as mojibake such as "ä¸­æ–‡". Reinterpret only
+        // strings that consist entirely of byte-valued code points and only if
+        // those bytes form *strictly valid* UTF-8. Latin-1 values such as é
+        // (single byte 0xe9) fail strict UTF-8 validation and remain untouched.
+        const bytes = new Uint8Array(text.length);
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            if (code > 0xff) return text; // Extended clipboard already decoded.
+            bytes[i] = code;
+        }
+
+        try {
+            const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (decoded !== text && this._hasNonAscii(decoded)) {
+                Log.Debug("Recovered UTF-8 text from legacy ServerCutText bytes");
+                return decoded;
+            }
+        } catch {
+            // Not UTF-8: preserve the exact legacy RFB text.
+        }
+        return text;
+    }
+
+    async _setNewHomeClipboard(text) {
+        if (!this._hasNonAscii(text) || typeof fetch !== 'function') return false;
+
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), NEWHOME_CLIPBOARD_TIMEOUT_MS) : null;
+        try {
+            const response = await fetch(NEWHOME_CLIPBOARD_PATH, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'X-NewHome-Clipboard': '1',
+                },
+                body: JSON.stringify({ text }),
+                cache: 'no-store',
+                credentials: 'same-origin',
+                signal: controller?.signal,
+            });
+            if (!response.ok) return false;
+            const payload = await response.json();
+            return payload?.ok === true;
+        } catch (error) {
+            Log.Debug("NewHome Unicode clipboard side channel unavailable: ", error);
+            return false;
+        } finally {
+            if (timer !== null) clearTimeout(timer);
+        }
+    }
+
+    _afterNewHomeClipboardApplied(callback) {
+        setTimeout(callback, NEWHOME_CLIPBOARD_APPLY_DELAY_MS);
+    }
+
     _entryControllerPriorityActive() {
         return this._insideRemote &&
                this._enteredAt > 0 &&
@@ -127,13 +201,30 @@ export default class AsyncClipboard {
     _stageControllerClipboard(reason) {
         if (typeof this._controllerText !== 'string') return false;
 
+        const text = this._controllerText;
+        this._lastInjectedControllerText = text;
+        this._lastInjectedControllerAt = Date.now();
+        this._controllerStagedForEntry = true;
+
+        // Only Unicode takes the NewHome side channel. ASCII remains byte-for-
+        // byte on the already working RFB path. If the local endpoint is absent
+        // or NewHome is not running, fall back to RFB rather than losing paste.
+        if (this._hasNonAscii(text)) {
+            this._setNewHomeClipboard(text).then((handled) => {
+                if (!handled) {
+                    this.onpaste(text, false, false);
+                    Log.Debug(`Staged Unicode controller clipboard via RFB fallback (${reason})`);
+                    return;
+                }
+                Log.Debug(`Staged Unicode controller clipboard via NewHome (${reason})`);
+            });
+            return true;
+        }
+
         // The callback sends ClientCutText/extended clipboard to x11vnc but
         // does not synthesize Ctrl+V.  It therefore safely prepares X11 before
         // a Linux context-menu Paste or before the fallback remote Ctrl+V.
-        this.onpaste(this._controllerText, false, false);
-        this._lastInjectedControllerText = this._controllerText;
-        this._lastInjectedControllerAt = Date.now();
-        this._controllerStagedForEntry = true;
+        this.onpaste(text, false, false);
         Log.Debug(`Staged controller clipboard for remote (${reason})`);
         return true;
     }
@@ -290,8 +381,29 @@ export default class AsyncClipboard {
         this._rememberControllerClipboard(text, 'paste-event');
         this._lastInjectedControllerText = text;
         this._lastInjectedControllerAt = Date.now();
-        this.onpaste(text, true, this._explicitPasteUsedMeta);
+
+        const usedMeta = this._explicitPasteUsedMeta;
         this._explicitPasteUsedMeta = false;
+
+        if (!this._hasNonAscii(text)) {
+            // Preserve the already working ASCII path exactly.
+            this.onpaste(text, true, usedMeta);
+            return;
+        }
+
+        // Unicode first goes through NewHome's lossless UTF-8/Base64 bridge.
+        // Only synthesize Ctrl+V after the chroot clipboard bridge has had one
+        // polling interval to publish the Android value into X11. If anything
+        // fails, use the pre-existing RFB paste path instead.
+        this._setNewHomeClipboard(text).then((handled) => {
+            if (!handled) {
+                this.onpaste(text, true, usedMeta);
+                return;
+            }
+            this._afterNewHomeClipboardApplied(() => {
+                this.onshortcut('paste', usedMeta);
+            });
+        });
     }
 
     _handleCopy(event) {
@@ -326,6 +438,12 @@ export default class AsyncClipboard {
 
     writeClipboard(text) {
         if (typeof text !== 'string') return false;
+
+        // Recover x11vnc's common "UTF-8 bytes carried in legacy ServerCutText"
+        // form here rather than modifying the RFB/X11 state machine. This keeps
+        // ASCII and genuine Latin-1 behavior unchanged and also applies before
+        // echo suppression, so Unicode controller injections compare correctly.
+        text = this._normalizeRemoteText(text);
 
         this._remoteText = text;
         this._remoteObservedAt = Date.now();
