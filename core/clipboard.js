@@ -15,6 +15,8 @@ export default class AsyncClipboard {
         this._isAvailable = null;
         // NEWHOME_EXPLICIT_PASTE: Firefox keyboard/right-click clipboard bridge.
         this._explicitPasteShortcut = false;
+        this._explicitPasteUsedMeta = false;
+        this._pasteFallbackTimer = null;
 
         this._eventHandlers = {
             'focus': this._handleFocus.bind(this),
@@ -27,6 +29,7 @@ export default class AsyncClipboard {
         // ===== EVENT HANDLERS =====
 
         this.onpaste = () => {};
+        this.onshortcut = () => {};
     }
 
     // ===== PRIVATE METHODS =====
@@ -54,20 +57,41 @@ export default class AsyncClipboard {
 
     _handlePasteKeyDown(event) {
         if (this._isEditableTarget(event.target)) return;
-        if ((event.ctrlKey || event.metaKey) && !event.altKey &&
-            event.key.toLowerCase() === 'v') {
+        if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+
+        const key = event.key.toLowerCase();
+        if (key === 'c') {
+            // The remote desktop is Linux. In particular, macOS Command is
+            // normally mapped by noVNC as Alt, so explicitly send Ctrl+C.
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            this.onshortcut('copy', event.metaKey && !event.ctrlKey);
+        } else if (key === 'v') {
             this._explicitPasteShortcut = true;
+            this._explicitPasteUsedMeta = event.metaKey && !event.ctrlKey;
             // Keyboard's normal handler would send Ctrl/Meta+V before the RFB
             // clipboard update. Keep the browser's paste action, but stop that
             // premature remote key event.
             event.stopImmediatePropagation();
+
+            // Firefox can omit the paste event (permissions, focus, or its
+            // context-menu implementation). Never leave remote Ctrl+V lost.
+            clearTimeout(this._pasteFallbackTimer);
+            this._pasteFallbackTimer = setTimeout(() => {
+                this._pasteFallbackTimer = null;
+                if (this._explicitPasteShortcut) {
+                    this._explicitPasteShortcut = false;
+                    this.onshortcut('paste', this._explicitPasteUsedMeta);
+                }
+            }, 200);
         }
     }
 
     _handlePasteKeyUp(event) {
-        if (this._explicitPasteShortcut && event.key.toLowerCase() === 'v') {
+        const key = event.key.toLowerCase();
+        if ((this._explicitPasteShortcut && key === 'v') ||
+            ((event.ctrlKey || event.metaKey) && key === 'c')) {
             event.stopImmediatePropagation();
-            this._explicitPasteShortcut = false;
         }
     }
 
@@ -77,7 +101,11 @@ export default class AsyncClipboard {
         if (typeof text !== 'string') return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        this.onpaste(text, true);
+        clearTimeout(this._pasteFallbackTimer);
+        this._pasteFallbackTimer = null;
+        this._explicitPasteShortcut = false;
+        this.onpaste(text, true, this._explicitPasteUsedMeta);
+        this._explicitPasteUsedMeta = false;
     }
 
     async _handleContextMenu(event) {
@@ -136,5 +164,8 @@ export default class AsyncClipboard {
         this._eventTarget.removeEventListener('contextmenu', this._eventHandlers.contextmenu, true);
         this._target.removeEventListener('focus', this._eventHandlers.focus);
         this._explicitPasteShortcut = false;
+        this._explicitPasteUsedMeta = false;
+        clearTimeout(this._pasteFallbackTimer);
+        this._pasteFallbackTimer = null;
     }
 }
