@@ -109,6 +109,25 @@ while [ "$*" ]; do
     esac
 done
 
+# NEWHOME_AUTO_TLS: use the persistent local CA unless the caller explicitly
+# supplied --cert or disabled HTTPS. The helper remains outside this fork so
+# the same CA is shared with the chroot deployment tooling.
+if [ -z "${CERT}" ] && [[ "${NOVNC_HTTPS:-1}" != "0" &&
+                          "${NOVNC_HTTPS:-1}" != "off" &&
+                          "${NOVNC_HTTPS:-1}" != "false" &&
+                          "${NOVNC_HTTPS:-1}" != "no" ]]; then
+    TLS_HELPER=${NOVNC_TLS_HELPER:-$HOME/sh/win-git/noVNC_tls.sh}
+    if [ -f "$TLS_HELPER" ]; then
+        # shellcheck source=/dev/null
+        . "$TLS_HELPER"
+        novnc_tls_prepare || die "Failed to prepare NewHome noVNC HTTPS certificate"
+        CERT=$NOVNC_TLS_CERT
+        KEY=$NOVNC_TLS_KEY
+        SSLONLY="--ssl-only"
+        ln -sfn "$NOVNC_TLS_CA_CERT" "$HERE/../novnc-ca.crt"
+    fi
+fi
+
 if [ "$LISTEN" != "$PORT" ]; then
     HOST=${LISTEN%:*}
     PORT=${LISTEN##*:}
