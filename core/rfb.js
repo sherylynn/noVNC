@@ -43,6 +43,11 @@ import H264Decoder from "./decoders/h264.js";
 const DISCONNECT_TIMEOUT = 3;
 const DEFAULT_BACKGROUND = 'rgb(40, 40, 40)';
 
+// NewHome private ExtendedDesktopSize flags: high 16 bits "NH", low 16 bits DPI.
+const NEWHOME_FLAGS_MAGIC = 0x4e480000;
+const NEWHOME_BASE_DPI = 96;
+const NEWHOME_MAX_REMOTE_DIMENSION = 8192;
+
 // Minimum wait (ms) between two mouse moves
 const MOUSE_MOVE_DELAY = 17;
 
@@ -269,7 +274,7 @@ export default class RFB extends EventTargetMixin {
         }
 
         this._asyncClipboard = new AsyncClipboard(this._canvas);
-        this._asyncClipboard.onpaste = this.clipboardPasteFrom.bind(this);
+        this._asyncClipboard.onpaste = this._handleLocalClipboardPaste.bind(this);
 
         this._keyboard = new Keyboard(this._canvas);
         this._keyboard.onkeyevent = this._handleKeyEvent.bind(this);
@@ -308,6 +313,7 @@ export default class RFB extends EventTargetMixin {
 
         this._qualityLevel = 6;
         this._compressionLevel = 2;
+        this._newHomeLastSentDPI = null;
     }
 
     // ===== PROPERTIES =====
@@ -513,31 +519,25 @@ export default class RFB extends EventTargetMixin {
             this._clipboardText = text;
             RFB.messages.extendedClipboardNotify(this._sock, [extendedClipboardFormatText]);
         } else {
-            let length, i;
-            let data;
-
-            length = 0;
-            // eslint-disable-next-line no-unused-vars
-            for (let codePoint of text) {
-                length++;
-            }
-
-            data = new Uint8Array(length);
-
-            i = 0;
-            for (let codePoint of text) {
-                let code = codePoint.codePointAt(0);
-
-                /* Only ISO 8859-1 is supported */
-                if (code > 0xff) {
-                    code = 0x3f; // '?'
-                }
-
-                data[i++] = code;
-            }
-
+            // x11vnc passes ClientCutText bytes into the X11 UTF-8 selection.
+            // Sending UTF-8 here preserves Chinese and other non-Latin text;
+            // noVNC's stock ISO-8859-1 fallback replaces them with '?'.
+            const data = new TextEncoder().encode(text);
             RFB.messages.clientCutText(this._sock, data);
         }
+    }
+
+    _handleLocalClipboardPaste(text, explicitPaste = false) {
+        this.clipboardPasteFrom(text);
+        if (!explicitPaste) return;
+
+        // RFB messages retain order: update the remote clipboard first, then
+        // paste it into the focused Linux application. macOS Command+V and
+        // Windows/Linux Ctrl+V both map to the Linux Ctrl+V shortcut here.
+        this.sendKey(KeyTable.XK_Control_L, 'ControlLeft', true);
+        this.sendKey(KeyTable.XK_v, 'KeyV', true);
+        this.sendKey(KeyTable.XK_v, 'KeyV', false);
+        this.sendKey(KeyTable.XK_Control_L, 'ControlLeft', false);
     }
 
     getImageData() {
@@ -781,13 +781,60 @@ export default class RFB extends EventTargetMixin {
     }
 
     _updateScale() {
-        if (!this._scaleViewport) {
+        if (!this._scaleViewport && this._resizeSession) {
+            const hidpi = this._newHomeHiDPISettings();
+            this._display.scale = hidpi.enabled ? 1.0 / hidpi.scale : 1.0;
+        } else if (!this._scaleViewport) {
             this._display.scale = 1.0;
         } else {
             const size = this._screenSize();
             this._display.autoscale(size.w, size.h);
         }
         this._fixScrollbars();
+    }
+
+    _newHomeHiDPISettings() {
+        const params = new URLSearchParams(window.location.search);
+        const value = (params.get("hidpi") || "auto").trim().toLowerCase();
+
+        if (value === "off" || value === "0" || value === "false") {
+            return { enabled: false, scale: 1.0 };
+        }
+
+        let scale;
+        if (value === "auto") {
+            scale = Math.max(1.0, Number(window.devicePixelRatio) || 1.0);
+        } else {
+            scale = Number(value);
+            if (!Number.isFinite(scale) || scale < 0.5 || scale > 4.0) {
+                Log.Warn("Invalid hidpi value '" + value + "', falling back to auto");
+                scale = Math.max(1.0, Number(window.devicePixelRatio) || 1.0);
+            }
+        }
+
+        const rect = this._screen.getBoundingClientRect();
+        const maxScale = Math.min(
+            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, rect.width),
+            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, rect.height));
+        scale = Math.max(0.5, Math.min(scale, maxScale));
+
+        return { enabled: true, scale: scale };
+    }
+
+    _newHomeRemoteGeometry() {
+        const rect = this._screen.getBoundingClientRect();
+        const hidpi = this._newHomeHiDPISettings();
+        const scale = hidpi.enabled ? hidpi.scale : 1.0;
+        return {
+            enabled: hidpi.enabled,
+            scale: scale,
+            // Termux:X11 rounds framebuffer width down to an 8-pixel boundary.
+            // Request the same geometry so the server response does not create
+            // an endless 2468 -> 2464 resize feedback loop on Retina screens.
+            width: Math.max(8, Math.floor(rect.width * scale / 8) * 8),
+            height: Math.max(1, Math.floor(rect.height * scale)),
+            dpi: Math.max(48, Math.min(65535, Math.round(NEWHOME_BASE_DPI * scale))),
+        };
     }
 
     // Requests a change of remote desktop size. This message is an extension
@@ -817,21 +864,32 @@ export default class RFB extends EventTargetMixin {
         }
         this._resizeTimeout = null;
 
-        const size = this._screenSize();
+        const target = this._newHomeRemoteGeometry();
 
         // Do we actually change anything?
-        if (size.w === this._fbWidth && size.h === this._fbHeight) {
+        if (target.width === this._fbWidth && target.height === this._fbHeight &&
+            this._newHomeLastSentDPI === target.dpi) {
             return;
         }
 
+        const flags = target.enabled ?
+            ((NEWHOME_FLAGS_MAGIC | target.dpi) >>> 0) : this._screenFlags;
+
         this._pendingRemoteResize = true;
         this._lastResize = Date.now();
+        this._newHomeLastSentDPI = target.dpi;
         RFB.messages.setDesktopSize(this._sock,
-                                    Math.floor(size.w), Math.floor(size.h),
-                                    this._screenID, this._screenFlags);
+                                    target.width, target.height,
+                                    this._screenID, flags);
 
-        Log.Debug('Requested new desktop size: ' +
-                   size.w + 'x' + size.h);
+        if (target.enabled) {
+            Log.Info('NewHome HiDPI remote resize: ' +
+                     target.width + 'x' + target.height +
+                     ' @ ' + target.scale.toFixed(2) + 'x, dpi=' + target.dpi);
+        } else {
+            Log.Debug('Requested new desktop size: ' +
+                      target.width + 'x' + target.height);
+        }
     }
 
     // Gets the the size of the available screen

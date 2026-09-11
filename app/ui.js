@@ -184,7 +184,15 @@ const UI = {
         UI.initSetting('password');
         UI.initSetting('autoconnect', false);
         UI.initSetting('view_clip', false);
-        UI.initSetting('resize', 'off');
+        // HTTP and HTTPS have separate localStorage. Migrate the old/default
+        // "off" once, then continue respecting explicit user changes.
+        if (WebUtil.readSetting('newhome_remote_resize_default_v1') !== 'done') {
+            if ([null, 'off'].includes(WebUtil.readSetting('resize'))) {
+                WebUtil.writeSetting('resize', 'remote');
+            }
+            WebUtil.writeSetting('newhome_remote_resize_default_v1', 'done');
+        }
+        UI.initSetting('resize', 'remote');
         UI.initSetting('quality', 6);
         UI.initSetting('compression', 2);
         UI.initSetting('shared', true);
@@ -394,10 +402,10 @@ const UI = {
         document.getElementById("noVNC_fullscreen_button")
             .addEventListener('click', UI.toggleFullscreen);
 
-        window.addEventListener('fullscreenchange', UI.updateFullscreenButton);
-        window.addEventListener('mozfullscreenchange', UI.updateFullscreenButton);
-        window.addEventListener('webkitfullscreenchange', UI.updateFullscreenButton);
-        window.addEventListener('msfullscreenchange', UI.updateFullscreenButton);
+        window.addEventListener('fullscreenchange', UI.handleFullscreenChange);
+        window.addEventListener('mozfullscreenchange', UI.handleFullscreenChange);
+        window.addEventListener('webkitfullscreenchange', UI.handleFullscreenChange);
+        window.addEventListener('msfullscreenchange', UI.handleFullscreenChange);
     },
 
 /* ------^-------
@@ -1442,6 +1450,17 @@ const UI = {
             document.getElementById('noVNC_fullscreen_button')
                 .classList.remove("noVNC_selected");
         }
+    },
+
+    handleFullscreenChange() {
+        UI.updateFullscreenButton();
+        // Firefox can dispatch fullscreenchange before its final viewport size
+        // reaches ResizeObserver. Re-evaluate after layout has settled.
+        window.setTimeout(() => {
+            if (UI.rfb && UI.getSetting('resize') === 'remote') {
+                UI.rfb.resizeSession = true;
+            }
+        }, 250);
     },
 
 /* ------^-------

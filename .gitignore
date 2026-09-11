@@ -10,3 +10,5 @@ recordings
 *.swp
 *~
 noVNC-*.tgz
+novnc-ca.crt
+utils/novnc_proxy.upstream
