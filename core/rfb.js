@@ -325,6 +325,7 @@ export default class RFB extends EventTargetMixin {
         this._qualityLevel = 6;
         this._compressionLevel = 2;
         this._newHomeLastSentDPI = null;
+        this._newHomeTelemetryTimer = null;
     }
 
     // ===== PROPERTIES =====
@@ -395,8 +396,9 @@ export default class RFB extends EventTargetMixin {
             // of every resize acknowledgement, which can create feedback.
             if (enteringRemoteResize) this._newHomeLastSentDPI = null;
             this._requestRemoteResize();
+            this._scheduleNewHomeRenderTelemetry('remote');
         } else if (this._scaleViewport) {
-            this._reportNewHomeRenderTelemetry('local');
+            this._scheduleNewHomeRenderTelemetry('local');
         }
     }
 
@@ -676,6 +678,7 @@ export default class RFB extends EventTargetMixin {
             }
         }
         clearTimeout(this._resizeTimeout);
+        clearTimeout(this._newHomeTelemetryTimer);
         clearTimeout(this._mouseMoveTimer);
         Log.Debug("<< RFB.disconnect");
     }
@@ -882,8 +885,10 @@ export default class RFB extends EventTargetMixin {
             !this._supportsSetDesktopSize || this._fbWidth < 320 ||
             this._fbHeight < 240) return;
 
+        const canvasRect = this._canvas.getBoundingClientRect();
+        const actualRenderScale = canvasRect.width / this._fbWidth;
         const renderMilli = Math.max(1, Math.min(4095,
-            Math.round(this._display.scale * 1000)));
+            Math.round(actualRenderScale * 1000)));
         // DPI values 1..15 are reserved as telemetry-only mode identifiers;
         // the preload adapter logs these without applying a Linux profile.
         const modeCode = mode === 'local' ? 1 : 2;
@@ -892,6 +897,14 @@ export default class RFB extends EventTargetMixin {
         RFB.messages.setDesktopSize(this._sock,
                                     this._fbWidth, this._fbHeight,
                                     this._screenID, flags);
+    }
+
+    _scheduleNewHomeRenderTelemetry(mode) {
+        clearTimeout(this._newHomeTelemetryTimer);
+        this._newHomeTelemetryTimer = setTimeout(() => {
+            this._newHomeTelemetryTimer = null;
+            this._reportNewHomeRenderTelemetry(mode);
+        }, 750);
     }
 
     // Requests a change of remote desktop size. This message is an extension
@@ -3103,7 +3116,7 @@ export default class RFB extends EventTargetMixin {
         if (firstUpdate) {
             this._requestRemoteResize();
             if (this._scaleViewport && !this._resizeSession) {
-                this._reportNewHomeRenderTelemetry('local');
+                this._scheduleNewHomeRenderTelemetry('local');
             }
         }
 

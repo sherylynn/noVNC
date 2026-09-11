@@ -85,6 +85,11 @@ If local scaling is already selected during initial connection, defer its report
 until the first ExtendedDesktopSize capability arrives; reporting earlier is
 silently skipped because SetDesktopSize support is not known yet.
 
+Render telemetry is delayed briefly after a mode transition and is calculated
+from the canvas' final `getBoundingClientRect()` width divided by framebuffer
+width. Do not report only `Display.scale`: browser layout/fullscreen composition
+can differ even when the internal Display value is unchanged.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by
