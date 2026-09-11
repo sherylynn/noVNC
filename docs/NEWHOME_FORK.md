@@ -47,6 +47,14 @@ rendered as a small canvas in the center of the page. Fitting the framebuffer
 does not lower its requested pixel resolution or the DPI sent to Linux; it only
 ensures that the resulting desktop fills the available browser area.
 
+The NewHome UI implements Remote resizing as a hybrid mode. It enables both
+`scaleViewport` and `resizeSession`: upstream noVNC autoscale remains solely
+responsible for rendering the canvas, while resizeSession sends the browser's
+Retina framebuffer geometry and DPI to Linux. Do not make these flags mutually
+exclusive again. Local scaling was verified as the stable renderer across the
+target Firefox clients; the remote mode adds server resizing, not a second
+canvas-scaling algorithm.
+
 All viewport measurements must come from the outer embedding container, not the
 internal flex element that contains the canvas. A Retina framebuffer can make
 that flex child report its 2464-pixel intrinsic width even when the browser has

@@ -18,7 +18,7 @@ import Keyboard from "../core/input/keyboard.js";
 // Keep this version synchronized with vnc.html. Firefox can retain an older
 // transitive ES-module graph even after a page reload unless the import URL
 // changes explicitly.
-import RFB from "../core/rfb.js?v=20260911-resize-telemetry-v7";
+import RFB from "../core/rfb.js?v=20260911-hybrid-remote-scale-v1";
 import WakeLockManager from './wakelock.js';
 import * as WebUtil from "./webutil.js";
 
@@ -1188,8 +1188,12 @@ const UI = {
         UI.rfb.addEventListener("bell", UI.bell);
         UI.rfb.addEventListener("desktopname", UI.updateDesktopName);
         UI.rfb.clipViewport = UI.getSetting('view_clip');
-        UI.rfb.scaleViewport = UI.getSetting('resize') === 'scale';
-        UI.rfb.resizeSession = UI.getSetting('resize') === 'remote';
+        const resizeMode = UI.getSetting('resize');
+        // NewHome remote mode is deliberately hybrid: use upstream noVNC's
+        // proven local autoscale renderer while also requesting the matching
+        // remote framebuffer geometry and DPI.
+        UI.rfb.scaleViewport = resizeMode === 'scale' || resizeMode === 'remote';
+        UI.rfb.resizeSession = resizeMode === 'remote';
         UI.rfb.qualityLevel = parseInt(UI.getSetting('quality'));
         UI.rfb.compressionLevel = parseInt(UI.getSetting('compression'));
         UI.rfb.showDotCursor = UI.getSetting('show_dot');
@@ -1476,8 +1480,9 @@ const UI = {
     applyResizeMode() {
         if (!UI.rfb) return;
 
-        UI.rfb.scaleViewport = UI.getSetting('resize') === 'scale';
-        UI.rfb.resizeSession = UI.getSetting('resize') === 'remote';
+        const resizeMode = UI.getSetting('resize');
+        UI.rfb.scaleViewport = resizeMode === 'scale' || resizeMode === 'remote';
+        UI.rfb.resizeSession = resizeMode === 'remote';
     },
 
 /* ------^-------
@@ -1492,7 +1497,8 @@ const UI = {
     updateViewClip() {
         if (!UI.rfb) return;
 
-        const scaling = UI.getSetting('resize') === 'scale';
+        const resizeMode = UI.getSetting('resize');
+        const scaling = resizeMode === 'scale' || resizeMode === 'remote';
 
         // Some platforms have overlay scrollbars that are difficult
         // to use in our case, which means we have to force panning
