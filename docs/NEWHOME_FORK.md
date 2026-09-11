@@ -66,6 +66,12 @@ version. Update it whenever remote-resize or clipboard runtime behavior changes.
 Firefox may otherwise reuse an older transitive ES-module graph even after a
 normal reload, making the page UI and the loaded RFB implementation disagree.
 
+NewHome SetDesktopSize flags use protocol v2: the high byte is `0x4e`, the next
+12 bits contain Linux DPI, and the low 12 bits contain the browser canvas render
+scale multiplied by 1000. The matching x11vnc preload adapter logs both values,
+allowing browser rendering and Linux profile application to be correlated
+without a second network service.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

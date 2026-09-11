@@ -44,7 +44,9 @@ const DISCONNECT_TIMEOUT = 3;
 const DEFAULT_BACKGROUND = 'rgb(40, 40, 40)';
 
 // NewHome private ExtendedDesktopSize flags: high 16 bits "NH", low 16 bits DPI.
-const NEWHOME_FLAGS_MAGIC = 0x4e480000;
+const NEWHOME_FLAGS_MAGIC = 0x4e000000;
+const NEWHOME_FLAGS_DPI_SHIFT = 12;
+const NEWHOME_FLAGS_VALUE_MASK = 0x00000fff;
 const NEWHOME_BASE_DPI = 96;
 const NEWHOME_MAX_REMOTE_DIMENSION = 8192;
 
@@ -903,8 +905,12 @@ export default class RFB extends EventTargetMixin {
             return;
         }
 
+        const renderMilli = Math.max(1, Math.min(4095,
+            Math.round(this._display.scale * 1000)));
         const flags = target.enabled ?
-            ((NEWHOME_FLAGS_MAGIC | target.dpi) >>> 0) : this._screenFlags;
+            ((NEWHOME_FLAGS_MAGIC |
+              ((target.dpi & NEWHOME_FLAGS_VALUE_MASK) << NEWHOME_FLAGS_DPI_SHIFT) |
+              renderMilli) >>> 0) : this._screenFlags;
 
         this._pendingRemoteResize = true;
         this._lastResize = Date.now();
@@ -916,7 +922,11 @@ export default class RFB extends EventTargetMixin {
         if (target.enabled) {
             Log.Info('NewHome HiDPI remote resize: ' +
                      target.width + 'x' + target.height +
-                     ' @ ' + target.scale.toFixed(2) + 'x, dpi=' + target.dpi);
+                     ' @ ' + target.scale.toFixed(2) + 'x, dpi=' + target.dpi +
+                     ', render=' + this._display.scale.toFixed(3) +
+                     ', viewport=' + this._target.clientWidth + 'x' +
+                     this._target.clientHeight + ', framebuffer=' +
+                     this._fbWidth + 'x' + this._fbHeight);
         } else {
             Log.Debug('Requested new desktop size: ' +
                       target.width + 'x' + target.height);
