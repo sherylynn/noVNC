@@ -81,6 +81,9 @@ Reserved DPI field values 1 and 2 are telemetry-only reports for local-scale and
 remote-resize modes respectively. The x11vnc adapter logs them but must not run
 the Linux display-profile helper. This allows the known-good local canvas scale
 to be compared with remote mode without changing framebuffer geometry.
+If local scaling is already selected during initial connection, defer its report
+until the first ExtendedDesktopSize capability arrives; reporting earlier is
+silently skipped because SetDesktopSize support is not known yet.
 
 ## HTTPS launcher
 

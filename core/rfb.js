@@ -3102,6 +3102,9 @@ export default class RFB extends EventTargetMixin {
         // resizing until we've gotten here.
         if (firstUpdate) {
             this._requestRemoteResize();
+            if (this._scaleViewport && !this._resizeSession) {
+                this._reportNewHomeRenderTelemetry('local');
+            }
         }
 
         if (this._FBU.x === 1 && this._FBU.y === 0) {
