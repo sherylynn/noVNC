@@ -151,35 +151,31 @@ export default class AsyncClipboard {
         if (this._isEditableTarget(event.target)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        // This also covers the browser context menu's Copy command. x11vnc
-        // will return the new X11 clipboard contents to the browser afterward.
         this.onshortcut('copy', false);
     }
 
-    async _handleContextMenu(event) {
+    _handleContextMenu(event) {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
 
-        // A context-menu invocation is a trusted user action. Retry the newest
-        // remote clipboard first before attempting controller -> remote sync.
-        this._flushPendingRemoteClipboard();
-
-        // Firefox does not expose clipboard-read through the Permissions API,
-        // but permits an explicit read attempt from a user-triggered action.
-        if (!navigator?.clipboard?.readText) return;
-        try {
-            const text = await navigator.clipboard.readText();
-            this.onpaste(text, false);
-        } catch (error) {
-            Log.Warn("Clipboard read on right click failed: ", error);
-        }
+        // Never invoke navigator.clipboard.readText() from a right click.
+        // Firefox/Safari can respond by showing their native "Paste" permission
+        // UI, which obscures the remote desktop and still does not guarantee a
+        // usable clipboard read. Controller -> remote clipboard continues through
+        // the normal paste event / Cmd(Ctrl)+V path.
+        //
+        // pointerdown runs before contextmenu, so a right click still counts as
+        // trusted user activation and flushes any pending Linux -> controller
+        // clipboard write. Suppressing this browser menu does not suppress the
+        // mouse button events already delivered to the remote Linux desktop.
+        event.preventDefault();
     }
 
     _isEditableTarget(target) {
         if (!target) return false;
         // noVNC deliberately focuses this hidden textarea for keyboard input.
-        // Firefox dispatches Cmd+V and context-menu Paste to it, so it belongs
-        // to the remote canvas rather than to noVNC's local settings forms.
+        // Firefox dispatches Cmd+V to it, so it belongs to the remote canvas
+        // rather than to noVNC's local settings forms.
         if (target.id === 'noVNC_keyboardinput') return false;
         const tag = target.tagName?.toLowerCase();
         return tag === 'input' || tag === 'textarea' || target.isContentEditable;
