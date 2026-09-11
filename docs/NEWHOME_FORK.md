@@ -39,6 +39,14 @@ the matching x11vnc receiver and `xfce4-scaling.sh` tooling. Browser viewport
 size, device-pixel ratio, and remote DPI information are propagated through the
 NewHome extension while retaining the stability guards added for x11vnc resize.
 
+In remote-resize mode, the accepted framebuffer is fitted to the current browser
+container. Do not restore a fixed `1 / devicePixelRatio` canvas scale: Firefox
+can report logical and physical dimensions differently across displays,
+fullscreen transitions, and browser zoom levels, which leaves a Retina desktop
+rendered as a small canvas in the center of the page. Fitting the framebuffer
+does not lower its requested pixel resolution or the DPI sent to Linux; it only
+ensures that the resulting desktop fills the available browser area.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

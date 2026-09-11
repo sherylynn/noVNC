@@ -794,8 +794,13 @@ export default class RFB extends EventTargetMixin {
 
     _updateScale() {
         if (!this._scaleViewport && this._resizeSession) {
-            const hidpi = this._newHomeHiDPISettings();
-            this._display.scale = hidpi.enabled ? 1.0 / hidpi.scale : 1.0;
+            // The requested framebuffer may use physical Retina pixels, but
+            // browsers disagree about whether layout dimensions before/after
+            // fullscreen are logical or physical pixels. Always fit the
+            // accepted framebuffer to the actual screen container instead of
+            // assuming that 1 / devicePixelRatio is the right CSS scale.
+            const size = this._screenSize();
+            this._display.autoscale(size.w, size.h);
         } else if (!this._scaleViewport) {
             this._display.scale = 1.0;
         } else {

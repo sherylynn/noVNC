@@ -1058,6 +1058,17 @@ describe('Remote Frame Buffer protocol client', function () {
 
             expect(client._display.autoscale).to.not.have.been.called;
         });
+
+        it('should fit remote-resize framebuffer to the screen container', function () {
+            client.scaleViewport = false;
+            client.resizeSession = true;
+            sinon.spy(client._display, "autoscale");
+
+            client._updateScale();
+
+            expect(client._display.autoscale).to.have.been.calledOnce;
+            expect(client._display.autoscale).to.have.been.calledWith(70, 80);
+        });
     });
 
     describe('Remote resize', function () {
