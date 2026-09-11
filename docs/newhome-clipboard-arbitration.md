@@ -23,6 +23,7 @@ PC/Mac 与 Linux 之间不再通过 `/newhome-clipboard`、NewHome 4715 或额�
 
 - **Browser → Linux**：经典 `ClientCutText` 直接发送 UTF-8 bytes；Extended Clipboard 继续使用协议已有的 UTF-8 编码。
 - **Linux → Browser**：x11vnc 常把 UTF-8 bytes 塞进经典 `ServerCutText` 的历史 8-bit 字段，noVNC 在写浏览器系统剪贴板前把这种 byte-string 按严格 UTF-8 恢复。
+- 少数链路会把单个或连续的 Unicode 字符变成完整的字面量转义（例如 `到` 变成 `\\u5230`）；只有当整个 payload 都由 `\\uXXXX` 组成时才解码，避免误改代码或普通文本中的转义片段。
 - 如果经典 `ServerCutText` 的 bytes 不是合法 UTF-8，则保持原来的 Latin-1/RFB 文本，不做破坏性转换。
 - Extended Clipboard 已经完成 UTF-8 解码，不进行第二次解码。
 
@@ -42,15 +43,15 @@ NewHome 4715 仍可继续负责**同一设备内部 Android ↔ Linux/X11** 的�
 - **不立即改写 X11 clipboard**；
 - Firefox/Safari 如果不能无提示读取，则不调用会弹出浏览器原生 `Paste` 菜单的读取路径。
 
-### 2. 刚进入后 Cmd/Ctrl+V：优先 PC/Mac
+### 2. 键盘 Ctrl+C/Ctrl+V：完整交给 Linux
 
-浏览器给出真实 `paste` event 时，`event.clipboardData` 是最强证据：
+noVNC clipboard 层不再注册全局 `copy`、`paste`、`keydown`、`keyup` 捕获监听，也不再合成远端快捷键。键盘事件沿 noVNC 原有键盘通道直接送到 Linux，因此：
 
-1. 更新 `controller slot`；
-2. 通过 RFB `ClientCutText` / Extended Clipboard 把文本写入 Linux；
-3. 再向 Linux 发送 Ctrl+V。
+- 终端中的 Ctrl+C 能正常产生中断；
+- Linux 应用自己的 Ctrl+C/Ctrl+V 语义不被网页剪贴板代码改变；
+- PC/Mac → Linux 的跨系统剪贴板准备继续使用入口窗口内的鼠标右键流程。
 
-如果浏览器没有给出 paste event，则只有在 5 秒入口窗口内才使用已缓存的 `controller slot`；超过窗口后直接发送 Linux Ctrl+V，不碰当前 remote clipboard。
+这避免了网页为了仲裁剪贴板而吞掉终端控制键，也避免重连后遗留的 shortcut 状态干扰右键操作。
 
 ### 3. 刚进入后右键：准备 PC/Mac clipboard，再让 Linux 自己显示菜单
 

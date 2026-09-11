@@ -17,9 +17,10 @@ import { browserAsyncClipboardSupport } from './util/browser.js';
 // so they intentionally behave as one "remote" clipboard domain here.
 //
 // Entering the remote canvas does not immediately overwrite either side. It
-// starts a short controller-priority window. During that window an explicit
-// remote paste (Cmd/Ctrl+V) or a right-click can stage the controller slot into
-// X11 before Linux consumes the clipboard. Once the user stays inside the
+// starts a short controller-priority window. During that window a right-click
+// can stage the controller slot into X11 before Linux consumes the clipboard.
+// Keyboard shortcuts are deliberately left to noVNC's normal keyboard path so
+// terminal Ctrl+C and application Ctrl+C/Ctrl+V reach Linux unchanged. Once the user stays inside the
 // remote desktop, Linux/Android remain authoritative unless a real browser
 // paste event provides fresh controller clipboard data.
 //
@@ -36,10 +37,6 @@ export default class AsyncClipboard {
         this._eventTarget = this._target?.ownerDocument || this._target;
 
         this._isAvailable = null;
-        this._explicitPasteShortcut = false;
-        this._explicitPasteUsedMeta = false;
-        this._pasteFallbackTimer = null;
-
         // Controller (PC/Mac) clipboard slot. We only update this from a
         // browser paste event or from a successful permission-safe async read.
         // A failed read never invalidates the previous known controller value.
@@ -69,10 +66,6 @@ export default class AsyncClipboard {
 
         this._eventHandlers = {
             'focus': this._handleFocus.bind(this),
-            'copy': this._handleCopy.bind(this),
-            'paste': this._handlePaste.bind(this),
-            'keydown': this._handlePasteKeyDown.bind(this),
-            'keyup': this._handlePasteKeyUp.bind(this),
             'contextmenu': this._handleContextMenu.bind(this),
             'pointerdown': this._handlePointerDown.bind(this),
             'pointerenter': this._handlePointerEnter.bind(this),
@@ -82,7 +75,6 @@ export default class AsyncClipboard {
         // ===== EVENT HANDLERS =====
 
         this.onpaste = () => {};
-        this.onshortcut = () => {};
     }
 
     // ===== PRIVATE METHODS =====
@@ -132,6 +124,21 @@ export default class AsyncClipboard {
     }
 
     _normalizeRemoteText(text) {
+        // Some clipboard producers expose a single Unicode character (or a
+        // sequence of characters) as literal JSON-style escapes, e.g. the X11
+        // text "到" arrives as the six ASCII characters "\\u5230". Decode only
+        // when the complete payload consists of Unicode escapes. This repairs
+        // that transport defect without changing source code or prose which
+        // merely contains a \\uXXXX fragment.
+        if (typeof text === 'string' &&
+            /^(?:\\u[0-9a-fA-F]{4})+$/.test(text)) {
+            try {
+                return JSON.parse(`"${text}"`);
+            } catch {
+                // Invalid surrogate sequence or malformed JSON: preserve it.
+            }
+        }
+
         if (typeof text !== 'string' || !this._hasNonAscii(text)) return text;
 
         // Standard RFB ServerCutText is historically an 8-bit string. x11vnc
@@ -264,100 +271,6 @@ export default class AsyncClipboard {
             });
     }
 
-    _handlePasteKeyDown(event) {
-        if (this._isEditableTarget(event.target)) return;
-        if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-
-        const key = event.key.toLowerCase();
-        if (key === 'c') {
-            // The controller shortcut means "ask Linux to copy". The resulting
-            // Linux/Android clipboard content is learned later from RFB, not from
-            // the controller clipboard slot.
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            this.onshortcut('copy', event.metaKey && !event.ctrlKey);
-        } else if (key === 'v') {
-            const controllerPriority = this._entryControllerPriorityActive();
-
-            // Once the user is already working inside Linux, Ctrl/Cmd+V must
-            // paste the existing X11 clipboard. Letting the browser perform a
-            // local paste here would emit a paste event containing the PC/Mac
-            // clipboard and silently overwrite a value just copied in Linux.
-            if (!controllerPriority) {
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                this.onshortcut('paste', event.metaKey && !event.ctrlKey);
-                return;
-            }
-
-            this._explicitPasteShortcut = true;
-            this._explicitPasteUsedMeta = event.metaKey && !event.ctrlKey;
-            // Keyboard's normal handler would send Ctrl/Meta+V before the RFB
-            // clipboard update. Keep the browser's paste action, but stop that
-            // premature remote key event.
-            event.stopImmediatePropagation();
-
-            clearTimeout(this._pasteFallbackTimer);
-            this._pasteFallbackTimer = setTimeout(() => {
-                this._pasteFallbackTimer = null;
-                if (!this._explicitPasteShortcut) return;
-
-                this._explicitPasteShortcut = false;
-
-                // If the browser did not deliver a paste event, only prefer the
-                // controller slot immediately after entering the remote desktop.
-                // During an established Linux session the current X11/Android
-                // clipboard remains authoritative.
-                if (this._entryControllerPriorityActive()) {
-                    this._stageControllerClipboard('entry-keyboard-paste-fallback');
-                }
-                this.onshortcut('paste', this._explicitPasteUsedMeta);
-                this._explicitPasteUsedMeta = false;
-            }, 200);
-        }
-    }
-
-    _handlePasteKeyUp(event) {
-        const key = event.key.toLowerCase();
-        if ((this._explicitPasteShortcut && key === 'v') ||
-            ((event.ctrlKey || event.metaKey) && key === 'c')) {
-            event.stopImmediatePropagation();
-        }
-    }
-
-    _handlePaste(event) {
-        if (this._isEditableTarget(event.target)) return;
-        const text = event.clipboardData?.getData('text/plain');
-        if (typeof text !== 'string') return;
-
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        clearTimeout(this._pasteFallbackTimer);
-        this._pasteFallbackTimer = null;
-        this._explicitPasteShortcut = false;
-
-        // A browser paste event is the strongest possible evidence that this
-        // paste should use the controller clipboard, regardless of how long the
-        // pointer has been inside noVNC.
-        this._rememberControllerClipboard(text, 'paste-event');
-        this._lastInjectedControllerText = text;
-        this._lastInjectedControllerAt = Date.now();
-
-        const usedMeta = this._explicitPasteUsedMeta;
-        this._explicitPasteUsedMeta = false;
-
-        // All text, including Chinese/emoji, now goes through RFB. The RFB
-        // ClientCutText path emits UTF-8 bytes before the remote Ctrl+V is sent.
-        this.onpaste(text, true, usedMeta);
-    }
-
-    _handleCopy(event) {
-        if (this._isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        this.onshortcut('copy', false);
-    }
-
     _handleContextMenu(event) {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
@@ -370,13 +283,6 @@ export default class AsyncClipboard {
         // We deliberately never call navigator.clipboard.readText() here because
         // Firefox/Safari may display their native "Paste" permission UI.
         event.preventDefault();
-    }
-
-    _isEditableTarget(target) {
-        if (!target) return false;
-        if (target.id === 'noVNC_keyboardinput') return false;
-        const tag = target.tagName?.toLowerCase();
-        return tag === 'input' || tag === 'textarea' || target.isContentEditable;
     }
 
     // ===== PUBLIC METHODS =====
@@ -418,10 +324,6 @@ export default class AsyncClipboard {
 
     grab() {
         if (!this._target) return;
-        this._eventTarget.addEventListener('copy', this._eventHandlers.copy, true);
-        this._eventTarget.addEventListener('paste', this._eventHandlers.paste, true);
-        this._eventTarget.addEventListener('keydown', this._eventHandlers.keydown, true);
-        this._eventTarget.addEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.addEventListener('contextmenu', this._eventHandlers.contextmenu, true);
         this._eventTarget.addEventListener('pointerdown', this._eventHandlers.pointerdown, true);
         this._target.addEventListener('pointerenter', this._eventHandlers.pointerenter);
@@ -432,19 +334,11 @@ export default class AsyncClipboard {
 
     ungrab() {
         if (!this._target) return;
-        this._eventTarget.removeEventListener('copy', this._eventHandlers.copy, true);
-        this._eventTarget.removeEventListener('paste', this._eventHandlers.paste, true);
-        this._eventTarget.removeEventListener('keydown', this._eventHandlers.keydown, true);
-        this._eventTarget.removeEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.removeEventListener('contextmenu', this._eventHandlers.contextmenu, true);
         this._eventTarget.removeEventListener('pointerdown', this._eventHandlers.pointerdown, true);
         this._target.removeEventListener('pointerenter', this._eventHandlers.pointerenter);
         this._target.removeEventListener('pointerleave', this._eventHandlers.pointerleave);
         this._target.removeEventListener('focus', this._eventHandlers.focus);
-        this._explicitPasteShortcut = false;
-        this._explicitPasteUsedMeta = false;
-        clearTimeout(this._pasteFallbackTimer);
-        this._pasteFallbackTimer = null;
         this._pendingRemoteText = null;
         this._insideRemote = false;
         this._enteredAt = 0;

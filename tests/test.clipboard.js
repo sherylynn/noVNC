@@ -93,6 +93,19 @@ describe('Async Clipboard', function () {
         expect(navigator.clipboard.writeText.calledWith('\u00e9')).to.be.true;
     });
 
+    it('decodes a clipboard payload made entirely of Unicode escapes', function () {
+        clipboard.writeClipboard('\\u5230');
+
+        expect(clipboard._remoteText).to.equal('到');
+        expect(navigator.clipboard.writeText.calledWith('到')).to.be.true;
+    });
+
+    it('preserves Unicode escape text embedded in source or prose', function () {
+        clipboard.writeClipboard('const value = "\\u5230";');
+
+        expect(clipboard._remoteText).to.equal('const value = "\\u5230";');
+    });
+
     it('treats an echoed controller injection as acknowledgement', function () {
         clipboard._lastInjectedControllerText = 'same text';
         clipboard._lastInjectedControllerAt = Date.now();
@@ -103,108 +116,15 @@ describe('Async Clipboard', function () {
         expect(navigator.clipboard.writeText.called).to.be.false;
     });
 
-    it('maps Command+C to a remote copy shortcut', function () {
-        clipboard.onshortcut = sinon.spy();
-        clipboard._handlePasteKeyDown({
-            target: targetMock, key: 'c', metaKey: true, ctrlKey: false,
-            altKey: false, preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        });
+    it('does not install global keyboard or browser copy/paste interception', function () {
+        const addListenerSpy = sinon.spy(targetMock.ownerDocument, 'addEventListener');
 
-        expect(clipboard.onshortcut.calledOnceWith('copy', true)).to.be.true;
-    });
+        clipboard.grab();
 
-    it('maps a browser copy event to a remote copy shortcut', function () {
-        clipboard.onshortcut = sinon.spy();
-        const event = {
-            target: targetMock,
-            preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        };
-
-        clipboard._handleCopy(event);
-
-        expect(event.preventDefault.calledOnce).to.be.true;
-        expect(clipboard.onshortcut.calledOnceWith('copy', false)).to.be.true;
-    });
-
-    it('uses cached controller clipboard for paste fallback just after entry', function () {
-        const clock = sinon.useFakeTimers();
-        clipboard.onpaste = sinon.spy();
-        clipboard.onshortcut = sinon.spy();
-        clipboard._controllerText = 'from mac';
-        clipboard._insideRemote = true;
-        clipboard._enteredAt = 1;
-
-        clipboard._handlePasteKeyDown({
-            target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
-            altKey: false, stopImmediatePropagation: sinon.spy(),
-        });
-        clock.tick(200);
-
-        expect(clipboard.onpaste.calledOnceWith('from mac', false, false)).to.be.true;
-        expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
-    });
-
-    it('keeps Linux clipboard authoritative after the entry window', function () {
-        const clock = sinon.useFakeTimers();
-        clipboard.onpaste = sinon.spy();
-        clipboard.onshortcut = sinon.spy();
-        clipboard._controllerText = 'stale controller text';
-        clipboard._insideRemote = true;
-        clipboard._enteredAt = 1;
-        clock.tick(6000);
-
-        const event = {
-            target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
-            altKey: false, preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        };
-        clipboard._handlePasteKeyDown(event);
-        clock.tick(200);
-
-        expect(event.preventDefault.calledOnce).to.be.true;
-        expect(clipboard.onpaste.called).to.be.false;
-        expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
-    });
-
-    it('uses a browser paste event as authoritative controller clipboard', function () {
-        const clock = sinon.useFakeTimers();
-        clipboard.onpaste = sinon.spy();
-        clipboard.onshortcut = sinon.spy();
-        clipboard._insideRemote = true;
-        clipboard._enteredAt = 1;
-        clipboard._handlePasteKeyDown({
-            target: targetMock, key: 'v', metaKey: true, ctrlKey: false,
-            altKey: false, preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        });
-        clipboard._handlePaste({
-            target: targetMock,
-            clipboardData: { getData: () => 'clipboard text' },
-            preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        });
-        clock.tick(200);
-
-        expect(clipboard._controllerText).to.equal('clipboard text');
-        expect(clipboard.onpaste.calledOnceWith('clipboard text', true, true)).to.be.true;
-        expect(clipboard.onshortcut.called).to.be.false;
-    });
-
-    it('sends Unicode browser paste directly through the RFB callback', function () {
-        clipboard.onpaste = sinon.spy();
-        clipboard.onshortcut = sinon.spy();
-
-        clipboard._handlePaste({
-            target: targetMock,
-            clipboardData: { getData: () => '中文粘贴🙂' },
-            preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        });
-
-        expect(clipboard.onpaste.calledOnceWith('中文粘贴🙂', true, false)).to.be.true;
-        expect(clipboard.onshortcut.called).to.be.false;
+        expect(addListenerSpy.calledWith('keydown')).to.be.false;
+        expect(addListenerSpy.calledWith('keyup')).to.be.false;
+        expect(addListenerSpy.calledWith('copy')).to.be.false;
+        expect(addListenerSpy.calledWith('paste')).to.be.false;
     });
 
     it('stages cached Unicode controller clipboard through RFB on entry right click', function () {

@@ -15,7 +15,7 @@ import { clientToElement } from './util/element.js';
 import { setCapture } from './util/events.js';
 import EventTargetMixin from './util/eventtarget.js';
 import Display from "./display.js";
-import AsyncClipboard from "./clipboard.js?v=20260911-rfb-utf8-v2";
+import AsyncClipboard from "./clipboard.js?v=20260912-native-shortcuts-v3";
 import Diagnostics from "./diagnostics.js";
 import Inflator from "./inflator.js";
 import Deflator from "./deflator.js";
@@ -286,7 +286,6 @@ export default class RFB extends EventTargetMixin {
 
         this._asyncClipboard = new AsyncClipboard(this._canvas);
         this._asyncClipboard.onpaste = this._handleLocalClipboardPaste.bind(this);
-        this._asyncClipboard.onshortcut = this._handleClipboardShortcut.bind(this);
 
         this._keyboard = new Keyboard(this._canvas);
         this._keyboard.onkeyevent = this._handleKeyEvent.bind(this);
@@ -553,28 +552,8 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
-    _handleLocalClipboardPaste(text, explicitPaste = false, usedMeta = false) {
+    _handleLocalClipboardPaste(text) {
         this.clipboardPasteFrom(text);
-        if (!explicitPaste) return;
-
-        this._handleClipboardShortcut('paste', usedMeta);
-    }
-
-    _handleClipboardShortcut(action, usedMeta = false) {
-        const keysym = action === 'copy' ? KeyTable.XK_c : KeyTable.XK_v;
-        const code = action === 'copy' ? 'KeyC' : 'KeyV';
-
-        // macOS Command+C/V and Windows/Linux Ctrl+C/V all become the Linux
-        // Ctrl shortcut. noVNC maps the left macOS Command key to remote Alt,
-        // so release that modifier before synthesizing Ctrl. Its physical key
-        // release later is harmless. For paste, clipboard data was queued first.
-        if (usedMeta) {
-            this.sendKey(KeyTable.XK_Alt_L, 'AltLeft', false);
-        }
-        this.sendKey(KeyTable.XK_Control_L, 'ControlLeft', true);
-        this.sendKey(keysym, code, true);
-        this.sendKey(keysym, code, false);
-        this.sendKey(KeyTable.XK_Control_L, 'ControlLeft', false);
     }
 
     getImageData() {
