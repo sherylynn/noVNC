@@ -325,7 +325,6 @@ export default class RFB extends EventTargetMixin {
         this._qualityLevel = 6;
         this._compressionLevel = 2;
         this._newHomeLastSentDPI = null;
-        this._newHomeLastSentRenderMilli = null;
     }
 
     // ===== PROPERTIES =====
@@ -383,6 +382,7 @@ export default class RFB extends EventTargetMixin {
 
     get resizeSession() { return this._resizeSession; }
     set resizeSession(resize) {
+        const enteringRemoteResize = resize && !this._resizeSession;
         this._resizeSession = resize;
         // applyResizeMode() changes scaleViewport before resizeSession. When
         // entering remote mode, the first setter therefore briefly applies
@@ -390,6 +390,10 @@ export default class RFB extends EventTargetMixin {
         // known, otherwise the Retina framebuffer remains visibly zoomed.
         this._updateScale();
         if (resize) {
+            // Force one request when crossing into remote mode even if only
+            // the browser render scale changed. Do not make render scale part
+            // of every resize acknowledgement, which can create feedback.
+            if (enteringRemoteResize) this._newHomeLastSentDPI = null;
             this._requestRemoteResize();
         }
     }
@@ -899,16 +903,15 @@ export default class RFB extends EventTargetMixin {
         this._resizeTimeout = null;
 
         const target = this._newHomeRemoteGeometry();
-        const renderMilli = Math.max(1, Math.min(4095,
-            Math.round(this._display.scale * 1000)));
 
         // Do we actually change anything?
         if (target.width === this._fbWidth && target.height === this._fbHeight &&
-            this._newHomeLastSentDPI === target.dpi &&
-            this._newHomeLastSentRenderMilli === renderMilli) {
+            this._newHomeLastSentDPI === target.dpi) {
             return;
         }
 
+        const renderMilli = Math.max(1, Math.min(4095,
+            Math.round(this._display.scale * 1000)));
         const flags = target.enabled ?
             ((NEWHOME_FLAGS_MAGIC |
               ((target.dpi & NEWHOME_FLAGS_VALUE_MASK) << NEWHOME_FLAGS_DPI_SHIFT) |
@@ -917,7 +920,6 @@ export default class RFB extends EventTargetMixin {
         this._pendingRemoteResize = true;
         this._lastResize = Date.now();
         this._newHomeLastSentDPI = target.dpi;
-        this._newHomeLastSentRenderMilli = renderMilli;
         RFB.messages.setDesktopSize(this._sock,
                                     target.width, target.height,
                                     this._screenID, flags);

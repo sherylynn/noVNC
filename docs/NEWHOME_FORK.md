@@ -72,10 +72,10 @@ scale multiplied by 1000. The matching x11vnc preload adapter logs both values,
 allowing browser rendering and Linux profile application to be correlated
 without a second network service.
 
-Render scale is part of resize-request deduplication. A mode switch can change
-only canvas scaling while framebuffer dimensions and DPI remain identical; that
-transition must still emit a request so the Linux-side diagnostic log captures
-the new browser rendering state.
+A transition into remote-resize mode forces one report even when framebuffer
+dimensions and DPI remain identical, so the Linux-side diagnostic log captures
+render-only changes. Render scale must not participate in every resize-response
+deduplication decision because that can create an acknowledgement feedback loop.
 
 ## HTTPS launcher
 
