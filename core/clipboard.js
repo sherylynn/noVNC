@@ -16,24 +16,19 @@ import { browserAsyncClipboardSupport } from './util/browser.js';
 // Linux and Android are already kept in sync by NewHome's device-side bridge,
 // so they intentionally behave as one "remote" clipboard domain here.
 //
-// Entering the remote canvas does not immediately overwrite either side.  It
-// starts a short controller-priority window.  During that window an explicit
+// Entering the remote canvas does not immediately overwrite either side. It
+// starts a short controller-priority window. During that window an explicit
 // remote paste (Cmd/Ctrl+V) or a right-click can stage the controller slot into
-// X11 before Linux consumes the clipboard.  Once the user stays inside the
+// X11 before Linux consumes the clipboard. Once the user stays inside the
 // remote desktop, Linux/Android remain authoritative unless a real browser
 // paste event provides fresh controller clipboard data.
+//
+// Clipboard payload transport is RFB only. Classic ClientCutText is sent as
+// UTF-8 bytes by RFB.clipboardPasteFrom(). Classic ServerCutText may arrive as
+// those UTF-8 bytes exposed as a legacy 8-bit JS string; _normalizeRemoteText()
+// recovers it strictly and falls back to the original Latin-1 text on failure.
 const ENTRY_CONTROLLER_PRIORITY_MS = 5000;
 const LOCAL_INJECTION_ECHO_MS = 5000;
-
-// Unicode clipboard text bypasses legacy RFB ClientCutText through a same-origin
-// HTTP endpoint backed by NewHome's UTF-8/Base64 clipboard bridge. ASCII keeps
-// using the existing RFB path unchanged. The HTTP path is intentionally best
-// effort: if NewHome is unavailable we immediately fall back to RFB.
-const NEWHOME_CLIPBOARD_PATH = '/newhome-clipboard';
-const NEWHOME_CLIPBOARD_TIMEOUT_MS = 750;
-// The chroot bridge polls the NewHome clipboard roughly every 350 ms. Give it
-// one polling interval before synthesizing Ctrl+V so X11 consumes the new text.
-const NEWHOME_CLIPBOARD_APPLY_DELAY_MS = 450;
 
 export default class AsyncClipboard {
     constructor(target) {
@@ -45,7 +40,7 @@ export default class AsyncClipboard {
         this._explicitPasteUsedMeta = false;
         this._pasteFallbackTimer = null;
 
-        // Controller (PC/Mac) clipboard slot.  We only update this from a
+        // Controller (PC/Mac) clipboard slot. We only update this from a
         // browser paste event or from a successful permission-safe async read.
         // A failed read never invalidates the previous known controller value.
         this._controllerText = null;
@@ -60,7 +55,7 @@ export default class AsyncClipboard {
         // controller OS clipboard because the browser requires user activation.
         this._pendingRemoteText = null;
 
-        // Pointer context is a weak intent signal.  Re-entering from outside
+        // Pointer context is a weak intent signal. Re-entering from outside
         // opens a short window in which paste/right-click likely means the user
         // wants the controller clipboard in Linux.
         this._insideRemote = false;
@@ -113,7 +108,7 @@ export default class AsyncClipboard {
 
     async _refreshControllerClipboard(source) {
         // Do not call readText() on browsers that failed noVNC's permission
-        // capability probe.  In Firefox this avoids the native "Paste" prompt
+        // capability probe. In Firefox this avoids the native "Paste" prompt
         // that used to appear on right-click.
         if (!(await this._ensureAvailable())) return false;
         if (!navigator?.clipboard?.readText) return false;
@@ -139,12 +134,12 @@ export default class AsyncClipboard {
         // commonly forwards UTF-8 bytes through that field unchanged, which
         // noVNC then exposes as mojibake such as "ä¸­æ–‡". Reinterpret only
         // strings that consist entirely of byte-valued code points and only if
-        // those bytes form *strictly valid* UTF-8. Latin-1 values such as é
+        // those bytes form strictly valid UTF-8. Latin-1 values such as é
         // (single byte 0xe9) fail strict UTF-8 validation and remain untouched.
         const bytes = new Uint8Array(text.length);
         for (let i = 0; i < text.length; i++) {
             const code = text.charCodeAt(i);
-            if (code > 0xff) return text; // Extended clipboard already decoded.
+            if (code > 0xff) return text; // Extended clipboard is already decoded.
             bytes[i] = code;
         }
 
@@ -158,38 +153,6 @@ export default class AsyncClipboard {
             // Not UTF-8: preserve the exact legacy RFB text.
         }
         return text;
-    }
-
-    async _setNewHomeClipboard(text) {
-        if (!this._hasNonAscii(text) || typeof fetch !== 'function') return false;
-
-        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = controller ? setTimeout(() => controller.abort(), NEWHOME_CLIPBOARD_TIMEOUT_MS) : null;
-        try {
-            const response = await fetch(NEWHOME_CLIPBOARD_PATH, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'X-NewHome-Clipboard': '1',
-                },
-                body: JSON.stringify({ text }),
-                cache: 'no-store',
-                credentials: 'same-origin',
-                signal: controller?.signal,
-            });
-            if (!response.ok) return false;
-            const payload = await response.json();
-            return payload?.ok === true;
-        } catch (error) {
-            Log.Debug("NewHome Unicode clipboard side channel unavailable: ", error);
-            return false;
-        } finally {
-            if (timer !== null) clearTimeout(timer);
-        }
-    }
-
-    _afterNewHomeClipboardApplied(callback) {
-        setTimeout(callback, NEWHOME_CLIPBOARD_APPLY_DELAY_MS);
     }
 
     _entryControllerPriorityActive() {
@@ -206,26 +169,11 @@ export default class AsyncClipboard {
         this._lastInjectedControllerAt = Date.now();
         this._controllerStagedForEntry = true;
 
-        // Only Unicode takes the NewHome side channel. ASCII remains byte-for-
-        // byte on the already working RFB path. If the local endpoint is absent
-        // or NewHome is not running, fall back to RFB rather than losing paste.
-        if (this._hasNonAscii(text)) {
-            this._setNewHomeClipboard(text).then((handled) => {
-                if (!handled) {
-                    this.onpaste(text, false, false);
-                    Log.Debug(`Staged Unicode controller clipboard via RFB fallback (${reason})`);
-                    return;
-                }
-                Log.Debug(`Staged Unicode controller clipboard via NewHome (${reason})`);
-            });
-            return true;
-        }
-
-        // The callback sends ClientCutText/extended clipboard to x11vnc but
-        // does not synthesize Ctrl+V.  It therefore safely prepares X11 before
-        // a Linux context-menu Paste or before the fallback remote Ctrl+V.
+        // Always stage through RFB. RFB.clipboardPasteFrom() encodes classic
+        // ClientCutText as UTF-8 bytes, so Unicode no longer needs a NewHome
+        // HTTP/4715 side channel.
         this.onpaste(text, false, false);
-        Log.Debug(`Staged controller clipboard for remote (${reason})`);
+        Log.Debug(`Staged controller clipboard for remote via RFB (${reason})`);
         return true;
     }
 
@@ -253,14 +201,10 @@ export default class AsyncClipboard {
     }
 
     async _handleFocus() {
-        // Focus is only an observation opportunity.  Do not flush a pending
+        // Focus is only an observation opportunity. Do not flush a pending
         // remote value here: focus often means the user has just returned from
         // the controller OS, so overwriting its clipboard before we can observe
         // it would destroy exactly the value the user may intend to paste.
-
-        // Older code immediately
-        // sent the controller clipboard to Linux, which could overwrite a valid
-        // Linux/Android clipboard even when the user merely returned to noVNC.
         await this._refreshControllerClipboard('focus');
     }
 
@@ -271,7 +215,7 @@ export default class AsyncClipboard {
         this._controllerStagedForEntry = false;
 
         // Refresh opportunistically on browsers where clipboard-read permission
-        // is already available.  This does not overwrite the remote clipboard.
+        // is already available. This does not overwrite the remote clipboard.
         this._refreshControllerClipboard('pointer-enter');
     }
 
@@ -299,9 +243,9 @@ export default class AsyncClipboard {
         if (event.button !== 2 || !entryPriority) return;
 
         // Right-click shortly after entering the remote desktop is treated as a
-        // likely controller -> Linux paste workflow.  Use a previously observed
+        // likely controller -> Linux paste workflow. Use a previously observed
         // controller slot immediately, and also try a permission-safe refresh in
-        // parallel.  No navigator.clipboard.readText() call is made on browsers
+        // parallel. No navigator.clipboard.readText() call is made on browsers
         // that would show the Firefox/Safari native Paste permission UI.
         if (!this._controllerStagedForEntry) {
             this._stageControllerClipboard('entry-right-click-cached');
@@ -322,7 +266,7 @@ export default class AsyncClipboard {
 
         const key = event.key.toLowerCase();
         if (key === 'c') {
-            // The controller shortcut means "ask Linux to copy".  The resulting
+            // The controller shortcut means "ask Linux to copy". The resulting
             // Linux/Android clipboard content is learned later from RFB, not from
             // the controller clipboard slot.
             event.preventDefault();
@@ -385,25 +329,9 @@ export default class AsyncClipboard {
         const usedMeta = this._explicitPasteUsedMeta;
         this._explicitPasteUsedMeta = false;
 
-        if (!this._hasNonAscii(text)) {
-            // Preserve the already working ASCII path exactly.
-            this.onpaste(text, true, usedMeta);
-            return;
-        }
-
-        // Unicode first goes through NewHome's lossless UTF-8/Base64 bridge.
-        // Only synthesize Ctrl+V after the chroot clipboard bridge has had one
-        // polling interval to publish the Android value into X11. If anything
-        // fails, use the pre-existing RFB paste path instead.
-        this._setNewHomeClipboard(text).then((handled) => {
-            if (!handled) {
-                this.onpaste(text, true, usedMeta);
-                return;
-            }
-            this._afterNewHomeClipboardApplied(() => {
-                this.onshortcut('paste', usedMeta);
-            });
-        });
+        // All text, including Chinese/emoji, now goes through RFB. The RFB
+        // ClientCutText path emits UTF-8 bytes before the remote Ctrl+V is sent.
+        this.onpaste(text, true, usedMeta);
     }
 
     _handleCopy(event) {
@@ -417,7 +345,7 @@ export default class AsyncClipboard {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
 
-        // Keep the browser's own context menu out of the way.  The actual mouse
+        // Keep the browser's own context menu out of the way. The actual mouse
         // button events are still delivered to Linux, so the remote application's
         // context menu is the only one the user sees.
         //
@@ -440,16 +368,15 @@ export default class AsyncClipboard {
         if (typeof text !== 'string') return false;
 
         // Recover x11vnc's common "UTF-8 bytes carried in legacy ServerCutText"
-        // form here rather than modifying the RFB/X11 state machine. This keeps
-        // ASCII and genuine Latin-1 behavior unchanged and also applies before
-        // echo suppression, so Unicode controller injections compare correctly.
+        // representation at the browser boundary. Extended Clipboard is already
+        // Unicode, so _normalizeRemoteText() leaves code points > 0xff unchanged.
         text = this._normalizeRemoteText(text);
 
         this._remoteText = text;
         this._remoteObservedAt = Date.now();
 
         // x11vnc can echo a controller clipboard we just staged back as a server
-        // clipboard update.  That is an acknowledgement, not a fresh Linux copy,
+        // clipboard update. That is an acknowledgement, not a fresh Linux copy,
         // so do not churn the controller clipboard or change intent state.
         const injectedEcho =
             this._lastInjectedControllerText === text &&
