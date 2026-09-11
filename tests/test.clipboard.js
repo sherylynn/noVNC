@@ -35,10 +35,6 @@ describe('Async Clipboard', function () {
             .resolves({ state: state });
     }
 
-    function nextTick() {
-        return new Promise(resolve => setTimeout(resolve, 0));
-    }
-
     it('grab() installs focus and pointer intent listeners', function () {
         const addListenerSpy = sinon.spy(targetMock, 'addEventListener');
         clipboard.grab();
@@ -190,43 +186,31 @@ describe('Async Clipboard', function () {
         expect(clipboard.onshortcut.called).to.be.false;
     });
 
-    it('uses the NewHome side channel for Unicode paste before sending Ctrl+V', async function () {
-        const clock = sinon.useFakeTimers();
+    it('sends Unicode browser paste directly through the RFB callback', function () {
         clipboard.onpaste = sinon.spy();
         clipboard.onshortcut = sinon.spy();
-        sinon.stub(clipboard, '_setNewHomeClipboard').resolves(true);
 
         clipboard._handlePaste({
             target: targetMock,
-            clipboardData: { getData: () => '中文粘贴' },
+            clipboardData: { getData: () => '中文粘贴🙂' },
             preventDefault: sinon.spy(),
             stopImmediatePropagation: sinon.spy(),
         });
 
-        await Promise.resolve();
-        expect(clipboard.onpaste.called).to.be.false;
+        expect(clipboard.onpaste.calledOnceWith('中文粘贴🙂', true, false)).to.be.true;
         expect(clipboard.onshortcut.called).to.be.false;
-
-        clock.tick(450);
-        expect(clipboard.onshortcut.calledOnceWith('paste', false)).to.be.true;
-        expect(clipboard.onpaste.called).to.be.false;
     });
 
-    it('falls back to RFB if the NewHome Unicode side channel is unavailable', async function () {
+    it('stages cached Unicode controller clipboard through RFB on entry right click', function () {
         clipboard.onpaste = sinon.spy();
-        clipboard.onshortcut = sinon.spy();
-        sinon.stub(clipboard, '_setNewHomeClipboard').resolves(false);
+        clipboard._controllerText = '右键中文';
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = Math.max(1, performance.now());
+        clipboard._isAvailable = false;
 
-        clipboard._handlePaste({
-            target: targetMock,
-            clipboardData: { getData: () => '中文回退' },
-            preventDefault: sinon.spy(),
-            stopImmediatePropagation: sinon.spy(),
-        });
+        clipboard._handlePointerDown({ isTrusted: true, button: 2 });
 
-        await Promise.resolve();
-        expect(clipboard.onpaste.calledOnceWith('中文回退', true, false)).to.be.true;
-        expect(clipboard.onshortcut.called).to.be.false;
+        expect(clipboard.onpaste.calledOnceWith('右键中文', false, false)).to.be.true;
     });
 
     it('stages cached controller clipboard on right click just after entry', function () {
@@ -234,7 +218,7 @@ describe('Async Clipboard', function () {
         clipboard._controllerText = 'right-click from pc';
         clipboard._insideRemote = true;
         clipboard._enteredAt = Math.max(1, performance.now());
-        clipboard._isAvailable = false; // avoid an async read in this unit test
+        clipboard._isAvailable = false;
 
         clipboard._handlePointerDown({ isTrusted: true, button: 2 });
 
