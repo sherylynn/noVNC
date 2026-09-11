@@ -47,6 +47,13 @@ rendered as a small canvas in the center of the page. Fitting the framebuffer
 does not lower its requested pixel resolution or the DPI sent to Linux; it only
 ensures that the resulting desktop fills the available browser area.
 
+All viewport measurements must come from the outer embedding container, not the
+internal flex element that contains the canvas. A Retina framebuffer can make
+that flex child report its 2464-pixel intrinsic width even when the browser has
+only 1232 CSS pixels available. Measuring the child creates a feedback loop and
+renders a 2x Linux desktop at 1:1 CSS scale. The internal screen element also
+keeps zero minimum dimensions so its canvas cannot enlarge the measured layout.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

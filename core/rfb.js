@@ -227,6 +227,14 @@ export default class RFB extends EventTargetMixin {
         this._screen.style.display = 'flex';
         this._screen.style.width = '100%';
         this._screen.style.height = '100%';
+        // A Retina framebuffer can be wider than the browser's CSS viewport.
+        // Do not let the canvas' intrinsic size expand this flex item and then
+        // feed that expanded size back into scaling/remote-resize decisions.
+        this._screen.style.minWidth = '0';
+        this._screen.style.minHeight = '0';
+        this._screen.style.maxWidth = '100%';
+        this._screen.style.maxHeight = '100%';
+        this._screen.style.boxSizing = 'border-box';
         this._screen.style.overflow = 'auto';
         this._screen.style.background = DEFAULT_BACKGROUND;
         this._canvas = document.createElement('canvas');
@@ -596,8 +604,9 @@ export default class RFB extends EventTargetMixin {
         this._cursor.attach(this._canvas);
         this._refreshCursor();
 
-        // Monitor size changes of the screen element
-        this._resizeObserver.observe(this._screen);
+        // Monitor the embedding viewport. The canvas can change the internal
+        // screen element's intrinsic size without any browser resize.
+        this._resizeObserver.observe(this._target);
 
         // Always grab focus on some kind of click event
         this._canvas.addEventListener("mousedown", this._eventHandlers.focusCanvas);
@@ -725,12 +734,12 @@ export default class RFB extends EventTargetMixin {
     }
 
     _saveExpectedClientSize() {
-        this._expectedClientWidth = this._screen.clientWidth;
-        this._expectedClientHeight = this._screen.clientHeight;
+        this._expectedClientWidth = this._target.clientWidth;
+        this._expectedClientHeight = this._target.clientHeight;
     }
 
     _currentClientSize() {
-        return [this._screen.clientWidth, this._screen.clientHeight];
+        return [this._target.clientWidth, this._target.clientHeight];
     }
 
     _clientHasExpectedSize() {
@@ -839,7 +848,7 @@ export default class RFB extends EventTargetMixin {
     }
 
     _newHomeRemoteGeometry() {
-        const rect = this._screen.getBoundingClientRect();
+        const rect = this._target.getBoundingClientRect();
         const hidpi = this._newHomeHiDPISettings();
         const scale = hidpi.enabled ? hidpi.scale : 1.0;
         return {
@@ -911,7 +920,9 @@ export default class RFB extends EventTargetMixin {
 
     // Gets the the size of the available screen
     _screenSize() {
-        let r = this._screen.getBoundingClientRect();
+        // Measure the embedding container, not the flex child containing the
+        // canvas. The latter can temporarily reflect framebuffer dimensions.
+        let r = this._target.getBoundingClientRect();
         return { w: r.width, h: r.height };
     }
 
