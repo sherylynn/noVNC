@@ -7,22 +7,60 @@
 import * as Log from './util/logging.js';
 import { browserAsyncClipboardSupport } from './util/browser.js';
 
+// NEWHOME_EXPLICIT_PASTE / NEWHOME_CLIPBOARD_ARBITER
+//
+// Clipboard model used by the NewHome fork:
+//   - controller slot: clipboard last observed on the PC/Mac running noVNC
+//   - remote slot: clipboard last received from Linux/Android through RFB
+//
+// Linux and Android are already kept in sync by NewHome's device-side bridge,
+// so they intentionally behave as one "remote" clipboard domain here.
+//
+// Entering the remote canvas does not immediately overwrite either side.  It
+// starts a short controller-priority window.  During that window an explicit
+// remote paste (Cmd/Ctrl+V) or a right-click can stage the controller slot into
+// X11 before Linux consumes the clipboard.  Once the user stays inside the
+// remote desktop, Linux/Android remain authoritative unless a real browser
+// paste event provides fresh controller clipboard data.
+const ENTRY_CONTROLLER_PRIORITY_MS = 5000;
+const LOCAL_INJECTION_ECHO_MS = 5000;
+
 export default class AsyncClipboard {
     constructor(target) {
         this._target = target || null;
         this._eventTarget = this._target?.ownerDocument || this._target;
 
         this._isAvailable = null;
-        // NEWHOME_EXPLICIT_PASTE: Firefox keyboard/right-click clipboard bridge.
         this._explicitPasteShortcut = false;
         this._explicitPasteUsedMeta = false;
         this._pasteFallbackTimer = null;
 
-        // Latest clipboard value received from the remote desktop that has not
-        // yet been confirmed written to the controller OS clipboard.
-        // Firefox/Safari can expose navigator.clipboard.writeText() while still
-        // requiring a fresh trusted user activation for the actual write.
+        // Controller (PC/Mac) clipboard slot.  We only update this from a
+        // browser paste event or from a successful permission-safe async read.
+        // A failed read never invalidates the previous known controller value.
+        this._controllerText = null;
+        this._controllerObservedAt = 0;
+        this._controllerSource = null;
+
+        // Remote slot represents the shared Linux/Android side.
+        this._remoteText = null;
+        this._remoteObservedAt = 0;
+
+        // Latest remote clipboard value that could not yet be written to the
+        // controller OS clipboard because the browser requires user activation.
         this._pendingRemoteText = null;
+
+        // Pointer context is a weak intent signal.  Re-entering from outside
+        // opens a short window in which paste/right-click likely means the user
+        // wants the controller clipboard in Linux.
+        this._insideRemote = false;
+        this._enteredAt = 0;
+        this._controllerStagedForEntry = false;
+
+        // Prevent a controller value that we just injected into X11 from being
+        // mistaken for a new Linux/Android copy when x11vnc echoes it back.
+        this._lastInjectedControllerText = null;
+        this._lastInjectedControllerAt = 0;
 
         this._eventHandlers = {
             'focus': this._handleFocus.bind(this),
@@ -31,7 +69,9 @@ export default class AsyncClipboard {
             'keydown': this._handlePasteKeyDown.bind(this),
             'keyup': this._handlePasteKeyUp.bind(this),
             'contextmenu': this._handleContextMenu.bind(this),
-            'pointerdown': this._handleUserActivation.bind(this),
+            'pointerdown': this._handlePointerDown.bind(this),
+            'pointerenter': this._handlePointerEnter.bind(this),
+            'pointerleave': this._handlePointerLeave.bind(this),
         };
 
         // ===== EVENT HANDLERS =====
@@ -51,6 +91,51 @@ export default class AsyncClipboard {
             this._isAvailable = false;
         }
         return this._isAvailable;
+    }
+
+    _rememberControllerClipboard(text, source) {
+        if (typeof text !== 'string') return;
+        this._controllerText = text;
+        this._controllerObservedAt = Date.now();
+        this._controllerSource = source;
+        Log.Debug(`Controller clipboard slot updated (${source}, ${text.length} chars)`);
+    }
+
+    async _refreshControllerClipboard(source) {
+        // Do not call readText() on browsers that failed noVNC's permission
+        // capability probe.  In Firefox this avoids the native "Paste" prompt
+        // that used to appear on right-click.
+        if (!(await this._ensureAvailable())) return false;
+        if (!navigator?.clipboard?.readText) return false;
+
+        try {
+            const text = await navigator.clipboard.readText();
+            this._rememberControllerClipboard(text, source);
+            return true;
+        } catch (error) {
+            Log.Debug("Controller clipboard refresh unavailable: ", error);
+            return false;
+        }
+    }
+
+    _entryControllerPriorityActive() {
+        return this._insideRemote &&
+               this._enteredAt > 0 &&
+               (performance.now() - this._enteredAt) <= ENTRY_CONTROLLER_PRIORITY_MS;
+    }
+
+    _stageControllerClipboard(reason) {
+        if (typeof this._controllerText !== 'string') return false;
+
+        // The callback sends ClientCutText/extended clipboard to x11vnc but
+        // does not synthesize Ctrl+V.  It therefore safely prepares X11 before
+        // a Linux context-menu Paste or before the fallback remote Ctrl+V.
+        this.onpaste(this._controllerText, false, false);
+        this._lastInjectedControllerText = this._controllerText;
+        this._lastInjectedControllerAt = Date.now();
+        this._controllerStagedForEntry = true;
+        Log.Debug(`Staged controller clipboard for remote (${reason})`);
+        return true;
     }
 
     async _tryWriteRemoteClipboard(text) {
@@ -73,25 +158,71 @@ export default class AsyncClipboard {
 
     _flushPendingRemoteClipboard() {
         if (this._pendingRemoteText === null) return;
-        // Calling writeText from inside a trusted event handler is important for
-        // browsers that enforce transient user activation.
         this._tryWriteRemoteClipboard(this._pendingRemoteText);
     }
 
-    async _handleFocus(event) {
-        this._flushPendingRemoteClipboard();
-        if (!(await this._ensureAvailable())) return;
-        try {
-            const text = await navigator.clipboard.readText();
-            this.onpaste(text);
-        } catch (error) {
-            Log.Error("Clipboard read failed: ", error);
-        }
+    async _handleFocus() {
+        // Focus is only an observation opportunity.  Do not flush a pending
+        // remote value here: focus often means the user has just returned from
+        // the controller OS, so overwriting its clipboard before we can observe
+        // it would destroy exactly the value the user may intend to paste.
+
+        // Older code immediately
+        // sent the controller clipboard to Linux, which could overwrite a valid
+        // Linux/Android clipboard even when the user merely returned to noVNC.
+        await this._refreshControllerClipboard('focus');
     }
 
-    _handleUserActivation(event) {
+    _handlePointerEnter(event) {
         if (!event.isTrusted) return;
-        this._flushPendingRemoteClipboard();
+        this._insideRemote = true;
+        this._enteredAt = performance.now();
+        this._controllerStagedForEntry = false;
+
+        // Refresh opportunistically on browsers where clipboard-read permission
+        // is already available.  This does not overwrite the remote clipboard.
+        this._refreshControllerClipboard('pointer-enter');
+    }
+
+    _handlePointerLeave(event) {
+        if (!event.isTrusted) return;
+        this._insideRemote = false;
+        this._enteredAt = 0;
+        this._controllerStagedForEntry = false;
+    }
+
+    _handlePointerDown(event) {
+        if (!event.isTrusted) return;
+
+        const entryPriority = this._entryControllerPriorityActive();
+
+        // While the pointer has only just returned from the controller OS, never
+        // use that same click to flush an older remote clipboard back to the PC.
+        // The controller clipboard is the protected candidate during this short
+        // window. Outside the window, any trusted interaction may complete a
+        // deferred Linux/Android -> PC write.
+        if (!entryPriority) {
+            this._flushPendingRemoteClipboard();
+        }
+
+        if (event.button !== 2 || !entryPriority) return;
+
+        // Right-click shortly after entering the remote desktop is treated as a
+        // likely controller -> Linux paste workflow.  Use a previously observed
+        // controller slot immediately, and also try a permission-safe refresh in
+        // parallel.  No navigator.clipboard.readText() call is made on browsers
+        // that would show the Firefox/Safari native Paste permission UI.
+        if (!this._controllerStagedForEntry) {
+            this._stageControllerClipboard('entry-right-click-cached');
+        }
+        this._refreshControllerClipboard('entry-right-click')
+            .then((updated) => {
+                if (updated &&
+                    this._entryControllerPriorityActive() &&
+                    this._controllerText !== this._lastInjectedControllerText) {
+                    this._stageControllerClipboard('entry-right-click-refreshed');
+                }
+            });
     }
 
     _handlePasteKeyDown(event) {
@@ -100,8 +231,9 @@ export default class AsyncClipboard {
 
         const key = event.key.toLowerCase();
         if (key === 'c') {
-            // The remote desktop is Linux. In particular, macOS Command is
-            // normally mapped by noVNC as Alt, so explicitly send Ctrl+C.
+            // The controller shortcut means "ask Linux to copy".  The resulting
+            // Linux/Android clipboard content is learned later from RFB, not from
+            // the controller clipboard slot.
             event.preventDefault();
             event.stopImmediatePropagation();
             this.onshortcut('copy', event.metaKey && !event.ctrlKey);
@@ -113,15 +245,22 @@ export default class AsyncClipboard {
             // premature remote key event.
             event.stopImmediatePropagation();
 
-            // Firefox can omit the paste event (permissions, focus, or its
-            // context-menu implementation). Never leave remote Ctrl+V lost.
             clearTimeout(this._pasteFallbackTimer);
             this._pasteFallbackTimer = setTimeout(() => {
                 this._pasteFallbackTimer = null;
-                if (this._explicitPasteShortcut) {
-                    this._explicitPasteShortcut = false;
-                    this.onshortcut('paste', this._explicitPasteUsedMeta);
+                if (!this._explicitPasteShortcut) return;
+
+                this._explicitPasteShortcut = false;
+
+                // If the browser did not deliver a paste event, only prefer the
+                // controller slot immediately after entering the remote desktop.
+                // During an established Linux session the current X11/Android
+                // clipboard remains authoritative.
+                if (this._entryControllerPriorityActive()) {
+                    this._stageControllerClipboard('entry-keyboard-paste-fallback');
                 }
+                this.onshortcut('paste', this._explicitPasteUsedMeta);
+                this._explicitPasteUsedMeta = false;
             }, 200);
         }
     }
@@ -138,11 +277,19 @@ export default class AsyncClipboard {
         if (this._isEditableTarget(event.target)) return;
         const text = event.clipboardData?.getData('text/plain');
         if (typeof text !== 'string') return;
+
         event.preventDefault();
         event.stopImmediatePropagation();
         clearTimeout(this._pasteFallbackTimer);
         this._pasteFallbackTimer = null;
         this._explicitPasteShortcut = false;
+
+        // A browser paste event is the strongest possible evidence that this
+        // paste should use the controller clipboard, regardless of how long the
+        // pointer has been inside noVNC.
+        this._rememberControllerClipboard(text, 'paste-event');
+        this._lastInjectedControllerText = text;
+        this._lastInjectedControllerAt = Date.now();
         this.onpaste(text, true, this._explicitPasteUsedMeta);
         this._explicitPasteUsedMeta = false;
     }
@@ -158,24 +305,18 @@ export default class AsyncClipboard {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
 
-        // Never invoke navigator.clipboard.readText() from a right click.
-        // Firefox/Safari can respond by showing their native "Paste" permission
-        // UI, which obscures the remote desktop and still does not guarantee a
-        // usable clipboard read. Controller -> remote clipboard continues through
-        // the normal paste event / Cmd(Ctrl)+V path.
+        // Keep the browser's own context menu out of the way.  The actual mouse
+        // button events are still delivered to Linux, so the remote application's
+        // context menu is the only one the user sees.
         //
-        // pointerdown runs before contextmenu, so a right click still counts as
-        // trusted user activation and flushes any pending Linux -> controller
-        // clipboard write. Suppressing this browser menu does not suppress the
-        // mouse button events already delivered to the remote Linux desktop.
+        // Clipboard staging, when appropriate, already happened on pointerdown.
+        // We deliberately never call navigator.clipboard.readText() here because
+        // Firefox/Safari may display their native "Paste" permission UI.
         event.preventDefault();
     }
 
     _isEditableTarget(target) {
         if (!target) return false;
-        // noVNC deliberately focuses this hidden textarea for keyboard input.
-        // Firefox dispatches Cmd+V to it, so it belongs to the remote canvas
-        // rather than to noVNC's local settings forms.
         if (target.id === 'noVNC_keyboardinput') return false;
         const tag = target.tagName?.toLowerCase();
         return tag === 'input' || tag === 'textarea' || target.isContentEditable;
@@ -184,18 +325,32 @@ export default class AsyncClipboard {
     // ===== PUBLIC METHODS =====
 
     writeClipboard(text) {
-        // Always remember the newest remote clipboard. Do not gate the write on
-        // Permissions API detection: Firefox/Safari can report permission
-        // probing as unsupported while writeText() itself works after a gesture.
-        this._pendingRemoteText = text;
+        if (typeof text !== 'string') return false;
 
+        this._remoteText = text;
+        this._remoteObservedAt = Date.now();
+
+        // x11vnc can echo a controller clipboard we just staged back as a server
+        // clipboard update.  That is an acknowledgement, not a fresh Linux copy,
+        // so do not churn the controller clipboard or change intent state.
+        const injectedEcho =
+            this._lastInjectedControllerText === text &&
+            (Date.now() - this._lastInjectedControllerAt) <= LOCAL_INJECTION_ECHO_MS;
+        if (injectedEcho) {
+            Log.Debug("Remote clipboard matches recent controller injection; treating as echo");
+            this._pendingRemoteText = null;
+            return true;
+        }
+
+        // A genuinely new Linux/Android clipboard should flow back to the PC.
+        // If the browser blocks the write now, retain it until the next trusted
+        // pointer/focus interaction.
+        this._pendingRemoteText = text;
         if (navigator?.clipboard?.writeText) {
             this._tryWriteRemoteClipboard(text);
         }
 
-        // Keep RFB's normal "clipboard" event as a fallback. Previously this
-        // returned true before writeText()'s Promise settled, so a rejected
-        // browser write silently swallowed Linux -> controller clipboard data.
+        // Keep RFB's normal clipboard event as a fallback/UI update path.
         return false;
     }
 
@@ -207,12 +362,10 @@ export default class AsyncClipboard {
         this._eventTarget.addEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.addEventListener('contextmenu', this._eventHandlers.contextmenu, true);
         this._eventTarget.addEventListener('pointerdown', this._eventHandlers.pointerdown, true);
-        this._ensureAvailable()
-            .then((isAvailable) => {
-                if (isAvailable) {
-                    this._target.addEventListener('focus', this._eventHandlers.focus);
-                }
-            });
+        this._target.addEventListener('pointerenter', this._eventHandlers.pointerenter);
+        this._target.addEventListener('pointerleave', this._eventHandlers.pointerleave);
+        this._target.addEventListener('focus', this._eventHandlers.focus);
+        this._ensureAvailable();
     }
 
     ungrab() {
@@ -223,11 +376,16 @@ export default class AsyncClipboard {
         this._eventTarget.removeEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.removeEventListener('contextmenu', this._eventHandlers.contextmenu, true);
         this._eventTarget.removeEventListener('pointerdown', this._eventHandlers.pointerdown, true);
+        this._target.removeEventListener('pointerenter', this._eventHandlers.pointerenter);
+        this._target.removeEventListener('pointerleave', this._eventHandlers.pointerleave);
         this._target.removeEventListener('focus', this._eventHandlers.focus);
         this._explicitPasteShortcut = false;
         this._explicitPasteUsedMeta = false;
         clearTimeout(this._pasteFallbackTimer);
         this._pasteFallbackTimer = null;
         this._pendingRemoteText = null;
+        this._insideRemote = false;
+        this._enteredAt = 0;
+        this._controllerStagedForEntry = false;
     }
 }

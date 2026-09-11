@@ -39,83 +39,55 @@ describe('Async Clipboard', function () {
         return new Promise(resolve => setTimeout(resolve, 0));
     }
 
-    it('grab() adds listener if permissions granted', async function () {
-        stubClipboardPermissions('granted');
-
+    it('grab() installs focus and pointer intent listeners', function () {
         const addListenerSpy = sinon.spy(targetMock, 'addEventListener');
         clipboard.grab();
-
-        await nextTick();
 
         expect(addListenerSpy.calledWith('focus')).to.be.true;
+        expect(addListenerSpy.calledWith('pointerenter')).to.be.true;
+        expect(addListenerSpy.calledWith('pointerleave')).to.be.true;
     });
 
-    it('grab() does not add listener if permissions denied', async function () {
-        stubClipboardPermissions('denied');
-
-        const addListenerSpy = sinon.spy(targetMock, 'addEventListener');
-        clipboard.grab();
-
-        await nextTick();
-
-        expect(addListenerSpy.calledWith('focus')).to.be.false;
-    });
-
-    it('focus event triggers onpaste() if permissions granted', async function () {
+    it('focus observes the controller clipboard without overwriting remote', async function () {
         stubClipboardPermissions('granted');
-
         const text = 'hello clipboard world';
         navigator.clipboard.readText.resolves(text);
-
-        const spyPromise = new Promise(resolve => clipboard.onpaste = resolve);
-
-        clipboard.grab();
-
-        await nextTick();
-
-        targetMock.dispatchEvent(new Event('focus'));
-
-        const res = await spyPromise;
-        expect(res).to.equal(text);
-    });
-
-    it('focus event does not trigger onpaste() if permissions denied', async function () {
-        stubClipboardPermissions('denied');
-
-        const text = 'should not read';
-        navigator.clipboard.readText.resolves(text);
-
         clipboard.onpaste = sinon.spy();
 
-        clipboard.grab();
+        await clipboard._handleFocus();
 
-        await nextTick();
-
-        targetMock.dispatchEvent(new Event('focus'));
-
+        expect(navigator.clipboard.readText.calledOnce).to.be.true;
+        expect(clipboard._controllerText).to.equal(text);
         expect(clipboard.onpaste.called).to.be.false;
     });
 
-    it('writeClipboard() calls navigator.clipboard.writeText() if permissions granted', async function () {
-        stubClipboardPermissions('granted');
-        clipboard._isAvailable = true;
+    it('focus does not read when async clipboard permission is unavailable', async function () {
+        stubClipboardPermissions('denied');
+        clipboard.onpaste = sinon.spy();
 
+        await clipboard._handleFocus();
+
+        expect(navigator.clipboard.readText.called).to.be.false;
+        expect(clipboard.onpaste.called).to.be.false;
+    });
+
+    it('writeClipboard() attempts Linux/Android -> controller sync and keeps fallback', function () {
         const text = 'writing to clipboard';
         const result = clipboard.writeClipboard(text);
 
         expect(navigator.clipboard.writeText.calledWith(text)).to.be.true;
-        expect(result).to.be.true;
+        expect(result).to.be.false;
+        expect(clipboard._remoteText).to.equal(text);
     });
 
-    it('writeClipboard() does not call navigator.clipboard.writeText() if permissions denied', async function () {
-        stubClipboardPermissions('denied');
-        clipboard._isAvailable = false;
+    it('treats an echoed controller injection as acknowledgement', function () {
+        clipboard._lastInjectedControllerText = 'same text';
+        clipboard._lastInjectedControllerAt = Date.now();
 
-        const text = 'should not write';
-        const result = clipboard.writeClipboard(text);
+        const result = clipboard.writeClipboard('same text');
 
+        expect(result).to.be.true;
         expect(navigator.clipboard.writeText.called).to.be.false;
-        expect(result).to.be.false;
     });
 
     it('maps Command+C to a remote copy shortcut', function () {
@@ -143,19 +115,44 @@ describe('Async Clipboard', function () {
         expect(clipboard.onshortcut.calledOnceWith('copy', false)).to.be.true;
     });
 
-    it('falls back to a remote paste shortcut when no paste event arrives', function () {
+    it('uses cached controller clipboard for paste fallback just after entry', function () {
         const clock = sinon.useFakeTimers();
+        clipboard.onpaste = sinon.spy();
         clipboard.onshortcut = sinon.spy();
+        clipboard._controllerText = 'from mac';
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = 1;
+
         clipboard._handlePasteKeyDown({
             target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
             altKey: false, stopImmediatePropagation: sinon.spy(),
         });
         clock.tick(200);
 
+        expect(clipboard.onpaste.calledOnceWith('from mac', false, false)).to.be.true;
         expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
     });
 
-    it('uses clipboard text without a duplicate paste fallback', function () {
+    it('keeps Linux clipboard authoritative after the entry window', function () {
+        const clock = sinon.useFakeTimers();
+        clipboard.onpaste = sinon.spy();
+        clipboard.onshortcut = sinon.spy();
+        clipboard._controllerText = 'stale controller text';
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = 1;
+        clock.tick(6000);
+
+        clipboard._handlePasteKeyDown({
+            target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
+            altKey: false, stopImmediatePropagation: sinon.spy(),
+        });
+        clock.tick(200);
+
+        expect(clipboard.onpaste.called).to.be.false;
+        expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
+    });
+
+    it('uses a browser paste event as authoritative controller clipboard', function () {
         const clock = sinon.useFakeTimers();
         clipboard.onpaste = sinon.spy();
         clipboard.onshortcut = sinon.spy();
@@ -171,8 +168,43 @@ describe('Async Clipboard', function () {
         });
         clock.tick(200);
 
+        expect(clipboard._controllerText).to.equal('clipboard text');
         expect(clipboard.onpaste.calledOnceWith('clipboard text', true, true)).to.be.true;
         expect(clipboard.onshortcut.called).to.be.false;
     });
 
+    it('stages cached controller clipboard on right click just after entry', function () {
+        clipboard.onpaste = sinon.spy();
+        clipboard._controllerText = 'right-click from pc';
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = Math.max(1, performance.now());
+        clipboard._isAvailable = false; // avoid an async read in this unit test
+
+        clipboard._handlePointerDown({ isTrusted: true, button: 2 });
+
+        expect(clipboard.onpaste.calledOnceWith('right-click from pc', false, false)).to.be.true;
+    });
+
+    it('does not stage controller clipboard on right click after entry window', function () {
+        clipboard.onpaste = sinon.spy();
+        clipboard._controllerText = 'old pc value';
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = performance.now() - 6000;
+
+        clipboard._handlePointerDown({ isTrusted: true, button: 2 });
+
+        expect(clipboard.onpaste.called).to.be.false;
+    });
+
+    it('suppresses browser context menu without reading controller clipboard', function () {
+        const event = {
+            target: targetMock,
+            preventDefault: sinon.spy(),
+        };
+
+        clipboard._handleContextMenu(event);
+
+        expect(event.preventDefault.calledOnce).to.be.true;
+        expect(navigator.clipboard.readText.called).to.be.false;
+    });
 });
