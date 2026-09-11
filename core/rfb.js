@@ -15,7 +15,8 @@ import { clientToElement } from './util/element.js';
 import { setCapture } from './util/events.js';
 import EventTargetMixin from './util/eventtarget.js';
 import Display from "./display.js";
-import AsyncClipboard from "./clipboard.js";
+import AsyncClipboard from "./clipboard.js?v=20260911-linux-local-clipboard-v1";
+import Diagnostics from "./diagnostics.js";
 import Inflator from "./inflator.js";
 import Deflator from "./deflator.js";
 import Keyboard from "./input/keyboard.js";
@@ -910,6 +911,12 @@ export default class RFB extends EventTargetMixin {
     // Requests a change of remote desktop size. This message is an extension
     // and may only be sent if we have received an ExtendedDesktopSize message
     _requestRemoteResize() {
+        Diagnostics.capture('display', 'remote-resize-evaluate', {
+            enabled: this._resizeSession,
+            connected: this._rfbConnectionState === 'connected',
+            viewport: `${this._screen.parentNode.clientWidth}x${this._screen.parentNode.clientHeight}`,
+            devicePixelRatio: window.devicePixelRatio,
+        });
         if (!this._resizeSession) {
             return;
         }

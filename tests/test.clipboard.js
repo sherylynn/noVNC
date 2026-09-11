@@ -35,10 +35,6 @@ describe('Async Clipboard', function () {
             .resolves({ state: state });
     }
 
-    function nextTick() {
-        return new Promise(resolve => setTimeout(resolve, 0));
-    }
-
     it('grab() installs focus and pointer intent listeners', function () {
         const addListenerSpy = sinon.spy(targetMock, 'addEventListener');
         clipboard.grab();
@@ -92,13 +88,15 @@ describe('Async Clipboard', function () {
 
     it('maps Command+C to a remote copy shortcut', function () {
         clipboard.onshortcut = sinon.spy();
-        clipboard._handlePasteKeyDown({
+        const event = {
             target: targetMock, key: 'c', metaKey: true, ctrlKey: false,
             altKey: false, preventDefault: sinon.spy(),
             stopImmediatePropagation: sinon.spy(),
-        });
+        };
+        clipboard._handlePasteKeyDown(event);
 
         expect(clipboard.onshortcut.calledOnceWith('copy', true)).to.be.true;
+        expect(event.preventDefault.called).to.be.false;
     });
 
     it('maps a browser copy event to a remote copy shortcut', function () {
@@ -113,6 +111,26 @@ describe('Async Clipboard', function () {
 
         expect(event.preventDefault.calledOnce).to.be.true;
         expect(clipboard.onshortcut.calledOnceWith('copy', false)).to.be.true;
+    });
+
+    it('writes the latest remote value through the trusted browser copy event', function () {
+        clipboard.onshortcut = sinon.spy();
+        clipboard._remoteText = 'copied from Linux';
+        clipboard._copyShortcutInFlight = true;
+        const setData = sinon.spy();
+        const event = {
+            target: targetMock,
+            clipboardData: { setData },
+            preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        };
+
+        clipboard._handleCopy(event);
+
+        expect(setData.calledOnceWith('text/plain', 'copied from Linux')).to.be.true;
+        expect(event.preventDefault.calledOnce).to.be.true;
+        expect(clipboard.onshortcut.called).to.be.false;
+        expect(clipboard._controllerText).to.equal('copied from Linux');
     });
 
     it('uses cached controller clipboard for paste fallback just after entry', function () {
@@ -142,23 +160,28 @@ describe('Async Clipboard', function () {
         clipboard._enteredAt = 1;
         clock.tick(6000);
 
-        clipboard._handlePasteKeyDown({
+        const event = {
             target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
-            altKey: false, stopImmediatePropagation: sinon.spy(),
-        });
-        clock.tick(200);
+            altKey: false, preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        };
+        clipboard._handlePasteKeyDown(event);
 
         expect(clipboard.onpaste.called).to.be.false;
         expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
+        expect(event.preventDefault.calledOnce).to.be.true;
     });
 
     it('uses a browser paste event as authoritative controller clipboard', function () {
         const clock = sinon.useFakeTimers();
         clipboard.onpaste = sinon.spy();
         clipboard.onshortcut = sinon.spy();
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = 1;
         clipboard._handlePasteKeyDown({
             target: targetMock, key: 'v', metaKey: true, ctrlKey: false,
-            altKey: false, stopImmediatePropagation: sinon.spy(),
+            altKey: false, preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
         });
         clipboard._handlePaste({
             target: targetMock,

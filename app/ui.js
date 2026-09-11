@@ -15,10 +15,11 @@ import { setCapture, getPointerEvent } from '../core/util/events.js';
 import KeyTable from "../core/input/keysym.js";
 import keysyms from "../core/input/keysymdef.js";
 import Keyboard from "../core/input/keyboard.js";
+import Diagnostics from "../core/diagnostics.js";
 // Keep this version synchronized with vnc.html. Firefox can retain an older
 // transitive ES-module graph even after a page reload unless the import URL
 // changes explicitly.
-import RFB from "../core/rfb.js?v=20260911-hybrid-remote-scale-v1";
+import RFB from "../core/rfb.js?v=20260911-linux-local-clipboard-v1";
 import WakeLockManager from './wakelock.js';
 import * as WebUtil from "./webutil.js";
 
@@ -207,6 +208,8 @@ const UI = {
         UI.initSetting('reconnect', false);
         UI.initSetting('reconnect_delay', 5000);
         UI.initSetting('keep_device_awake', false);
+        UI.initSetting('newhome_debug', false);
+        Diagnostics.setEnabled(UI.getSetting('newhome_debug'));
     },
     // Adds a link to the label elements on the corresponding input elements
     setupSettingLabels() {
@@ -397,6 +400,8 @@ const UI = {
         UI.addSettingChangeHandler('repeaterID');
         UI.addSettingChangeHandler('logging');
         UI.addSettingChangeHandler('logging', UI.updateLogging);
+        UI.addSettingChangeHandler('newhome_debug');
+        UI.addSettingChangeHandler('newhome_debug', UI.updateNewHomeDiagnostics);
         UI.addSettingChangeHandler('reconnect');
         UI.addSettingChangeHandler('reconnect_delay');
     },
@@ -1165,6 +1170,12 @@ const UI = {
         }
 
         try {
+            Diagnostics.capture('rfb', 'connect-attempt', {
+                host: url.hostname,
+                port: url.port,
+                path: url.pathname,
+                resizeMode: UI.getSetting('resize'),
+            });
             UI.rfb = new RFB(document.getElementById('noVNC_container'),
                              url.href,
                              { shared: UI.getSetting('shared'),
@@ -1241,6 +1252,10 @@ const UI = {
     connectFinished(e) {
         UI.connected = true;
         UI.inhibitReconnect = false;
+        Diagnostics.capture('rfb', 'connected', {
+            encrypted: UI.getSetting('encrypt'),
+            desktopName: UI.desktopName,
+        });
 
         let msg;
         if (UI.getSetting('encrypt')) {
@@ -1259,6 +1274,10 @@ const UI = {
 
     disconnectFinished(e) {
         const wasConnected = UI.connected;
+        Diagnostics.capture('rfb', 'disconnected', {
+            clean: Boolean(e.detail.clean),
+            wasConnected,
+        });
 
         // This variable is ideally set when disconnection starts, but
         // when the disconnection isn't clean or if it is initiated by
@@ -1299,6 +1318,9 @@ const UI = {
     },
 
     securityFailed(e) {
+        Diagnostics.capture('rfb', 'security-failed', {
+            hasReason: 'reason' in e.detail,
+        });
         let msg;
         // On security failures we might get a string with a reason
         // directly from the server. Note that we can't control if
@@ -1460,6 +1482,11 @@ const UI = {
     },
 
     handleFullscreenChange() {
+        Diagnostics.capture('display', 'fullscreen-change', {
+            fullscreen: Boolean(document.fullscreenElement),
+            viewport: `${window.innerWidth}x${window.innerHeight}`,
+            devicePixelRatio: window.devicePixelRatio,
+        });
         UI.updateFullscreenButton();
         // Firefox can dispatch fullscreenchange before its final viewport size
         // reaches ResizeObserver. Re-evaluate after layout has settled.
@@ -1481,6 +1508,12 @@ const UI = {
         if (!UI.rfb) return;
 
         const resizeMode = UI.getSetting('resize');
+        Diagnostics.capture('display', 'resize-mode', {
+            mode: resizeMode,
+            viewport: `${window.innerWidth}x${window.innerHeight}`,
+            devicePixelRatio: window.devicePixelRatio,
+            fullscreen: Boolean(document.fullscreenElement),
+        });
         UI.rfb.scaleViewport = resizeMode === 'scale' || resizeMode === 'remote';
         UI.rfb.resizeSession = resizeMode === 'remote';
     },
@@ -1921,6 +1954,10 @@ const UI = {
 
     updateLogging() {
         WebUtil.initLogging(UI.getSetting('logging'));
+    },
+
+    updateNewHomeDiagnostics() {
+        Diagnostics.setEnabled(UI.getSetting('newhome_debug'));
     },
 
     updateDesktopName(e) {

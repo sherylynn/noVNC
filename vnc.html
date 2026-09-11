@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" class="noVNC_loading">
 <head>
-    <meta name="newhome-build" content="20260911-hybrid-remote-scale-v1">
+    <meta name="newhome-build" content="20260911-linux-local-clipboard-v1">
 
     <!--
     noVNC example: simple example using default UI
@@ -50,7 +50,7 @@
     <script type="module" crossorigin="anonymous" src="app/error-handler.js"></script>
 
     <script type="module">
-        import UI from "./app/ui.js?v=20260911-hybrid-remote-scale-v1";
+        import UI from "./app/ui.js?v=20260911-linux-local-clipboard-v1";
         import * as Log from './core/util/logging.js';
 
         let response;
@@ -308,6 +308,13 @@
                                 <label>Logging:
                                     <select id="noVNC_setting_logging" name="vncLogging">
                                     </select>
+                                </label>
+                            </li>
+                            <li>
+                                <label>
+                                    <input id="noVNC_setting_newhome_debug" type="checkbox"
+                                           class="toggle">
+                                    NewHome diagnostic logging
                                 </label>
                             </li>
                         </ul></div>

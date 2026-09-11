@@ -188,9 +188,14 @@ if [ -n "${KEY}" ]; then
     fi
 fi
 
-# try to find websockify (prefer local, try global, then download local)
+# try to find websockify (prefer the NewHome same-origin diagnostics wrapper,
+# then local upstream, global, or a newly downloaded local checkout)
 if [[ -d ${HERE}/websockify ]]; then
-    WEBSOCKIFY=${HERE}/websockify/run
+    if [[ -x ${HERE}/newhome_websockify.py ]]; then
+        WEBSOCKIFY=${HERE}/newhome_websockify.py
+    else
+        WEBSOCKIFY=${HERE}/websockify/run
+    fi
 
     if [[ ! -x $WEBSOCKIFY ]]; then
         echo "The path ${HERE}/websockify exists, but $WEBSOCKIFY either does not exist or is not executable."
@@ -217,6 +222,11 @@ else
     else
         echo "Using installed websockify at $WEBSOCKIFY"
     fi
+fi
+
+if [[ -x ${HERE}/newhome_websockify.py ]]; then
+    WEBSOCKIFY=${HERE}/newhome_websockify.py
+    echo "Using NewHome websockify diagnostics wrapper"
 fi
 
 # Make all file paths absolute as websockify changes working directory

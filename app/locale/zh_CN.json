@@ -64,6 +64,7 @@
     "Reconnect delay (ms):": "重新连接间隔 (ms)：",
     "Show dot when no cursor": "无光标时显示点",
     "Logging:": "日志级别：",
+    "NewHome diagnostic logging": "NewHome 调试日志",
     "Version:": "版本：",
     "Disconnect": "断开连接",
     "Connect": "连接",

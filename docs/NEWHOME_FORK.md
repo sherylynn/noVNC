@@ -98,6 +98,25 @@ from the canvas' final `getBoundingClientRect()` width divided by framebuffer
 width. Do not report only `Display.scale`: browser layout/fullscreen composition
 can differ even when the internal Display value is unchanged.
 
+## Browser diagnostic channel
+
+Advanced settings contains a `NewHome diagnostic logging` toggle. It is off by
+default and persisted per noVNC origin. When enabled, the browser batches
+metadata-only events to the same-origin `/newhome-debug` endpoint provided by
+`utils/newhome_websockify.py`. The chroot-side log is:
+
+`/tmp/novnc-browser-debug.jsonl`
+
+Events include clipboard API availability and permission-query results,
+copy/paste and RFB clipboard direction, asynchronous clipboard write failures,
+browser geometry, resize mode, and JavaScript errors. Clipboard text,
+credentials, and typed key contents are never sent. The server limits request
+size, strips content-like fields, rotates the log at 4 MiB, and accepts only a
+same-origin request carrying the NewHome diagnostics header.
+
+Use `tail -f /tmp/novnc-browser-debug.jsonl` while reproducing a client-specific
+problem. Toggling the setting off immediately clears the unsent browser queue.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by
