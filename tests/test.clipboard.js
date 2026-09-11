@@ -80,6 +80,23 @@ describe('Async Clipboard', function () {
         expect(clipboard._remoteText).to.equal(text);
     });
 
+    it('recovers UTF-8 bytes carried through legacy ServerCutText', function () {
+        const utf8 = new TextEncoder().encode('中文测试');
+        const legacyText = String.fromCharCode(...utf8);
+
+        clipboard.writeClipboard(legacyText);
+
+        expect(clipboard._remoteText).to.equal('中文测试');
+        expect(navigator.clipboard.writeText.calledWith('中文测试')).to.be.true;
+    });
+
+    it('preserves genuine Latin-1 when it is not valid UTF-8', function () {
+        clipboard.writeClipboard('\u00e9');
+
+        expect(clipboard._remoteText).to.equal('\u00e9');
+        expect(navigator.clipboard.writeText.calledWith('\u00e9')).to.be.true;
+    });
+
     it('treats an echoed controller injection as acknowledgement', function () {
         clipboard._lastInjectedControllerText = 'same text';
         clipboard._lastInjectedControllerAt = Date.now();
@@ -170,6 +187,45 @@ describe('Async Clipboard', function () {
 
         expect(clipboard._controllerText).to.equal('clipboard text');
         expect(clipboard.onpaste.calledOnceWith('clipboard text', true, true)).to.be.true;
+        expect(clipboard.onshortcut.called).to.be.false;
+    });
+
+    it('uses the NewHome side channel for Unicode paste before sending Ctrl+V', async function () {
+        const clock = sinon.useFakeTimers();
+        clipboard.onpaste = sinon.spy();
+        clipboard.onshortcut = sinon.spy();
+        sinon.stub(clipboard, '_setNewHomeClipboard').resolves(true);
+
+        clipboard._handlePaste({
+            target: targetMock,
+            clipboardData: { getData: () => '中文粘贴' },
+            preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        });
+
+        await Promise.resolve();
+        expect(clipboard.onpaste.called).to.be.false;
+        expect(clipboard.onshortcut.called).to.be.false;
+
+        clock.tick(450);
+        expect(clipboard.onshortcut.calledOnceWith('paste', false)).to.be.true;
+        expect(clipboard.onpaste.called).to.be.false;
+    });
+
+    it('falls back to RFB if the NewHome Unicode side channel is unavailable', async function () {
+        clipboard.onpaste = sinon.spy();
+        clipboard.onshortcut = sinon.spy();
+        sinon.stub(clipboard, '_setNewHomeClipboard').resolves(false);
+
+        clipboard._handlePaste({
+            target: targetMock,
+            clipboardData: { getData: () => '中文回退' },
+            preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        });
+
+        await Promise.resolve();
+        expect(clipboard.onpaste.calledOnceWith('中文回退', true, false)).to.be.true;
         expect(clipboard.onshortcut.called).to.be.false;
     });
 
