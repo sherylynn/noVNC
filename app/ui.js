@@ -19,7 +19,7 @@ import Diagnostics from "../core/diagnostics.js";
 // Keep this version synchronized with vnc.html. Firefox can retain an older
 // transitive ES-module graph even after a page reload unless the import URL
 // changes explicitly.
-import RFB from "../core/rfb.js?v=20260911-linux-local-clipboard-v1";
+import RFB from "../core/rfb.js?v=20260911-rfb-utf8-v2";
 import WakeLockManager from './wakelock.js';
 import * as WebUtil from "./webutil.js";
 

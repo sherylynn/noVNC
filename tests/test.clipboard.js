@@ -155,12 +155,15 @@ describe('Async Clipboard', function () {
         clipboard._enteredAt = 1;
         clock.tick(6000);
 
-        clipboard._handlePasteKeyDown({
+        const event = {
             target: targetMock, key: 'v', metaKey: false, ctrlKey: true,
-            altKey: false, stopImmediatePropagation: sinon.spy(),
-        });
+            altKey: false, preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        };
+        clipboard._handlePasteKeyDown(event);
         clock.tick(200);
 
+        expect(event.preventDefault.calledOnce).to.be.true;
         expect(clipboard.onpaste.called).to.be.false;
         expect(clipboard.onshortcut.calledOnceWith('paste')).to.be.true;
     });
@@ -169,9 +172,12 @@ describe('Async Clipboard', function () {
         const clock = sinon.useFakeTimers();
         clipboard.onpaste = sinon.spy();
         clipboard.onshortcut = sinon.spy();
+        clipboard._insideRemote = true;
+        clipboard._enteredAt = 1;
         clipboard._handlePasteKeyDown({
             target: targetMock, key: 'v', metaKey: true, ctrlKey: false,
-            altKey: false, stopImmediatePropagation: sinon.spy(),
+            altKey: false, preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
         });
         clipboard._handlePaste({
             target: targetMock,

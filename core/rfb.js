@@ -15,7 +15,7 @@ import { clientToElement } from './util/element.js';
 import { setCapture } from './util/events.js';
 import EventTargetMixin from './util/eventtarget.js';
 import Display from "./display.js";
-import AsyncClipboard from "./clipboard.js?v=20260911-linux-local-clipboard-v1";
+import AsyncClipboard from "./clipboard.js?v=20260911-rfb-utf8-v2";
 import Diagnostics from "./diagnostics.js";
 import Inflator from "./inflator.js";
 import Deflator from "./deflator.js";
@@ -888,8 +888,8 @@ export default class RFB extends EventTargetMixin {
 
         const canvasRect = this._canvas.getBoundingClientRect();
         const actualRenderScale = canvasRect.width / this._fbWidth;
-        const renderMilli = Math.max(1, Math.min(4095,
-            Math.round(actualRenderScale * 1000)));
+        const renderMilli = Math.max(1,
+                                     Math.min(4095, Math.round(actualRenderScale * 1000)));
         // DPI values 1..15 are reserved as telemetry-only mode identifiers;
         // the preload adapter logs these without applying a Linux profile.
         const modeCode = mode === 'local' ? 1 : 2;
@@ -949,8 +949,8 @@ export default class RFB extends EventTargetMixin {
             return;
         }
 
-        const renderMilli = Math.max(1, Math.min(4095,
-            Math.round(this._display.scale * 1000)));
+        const renderMilli = Math.max(1,
+                                     Math.min(4095, Math.round(this._display.scale * 1000)));
         const flags = target.enabled ?
             ((NEWHOME_FLAGS_MAGIC |
               ((target.dpi & NEWHOME_FLAGS_VALUE_MASK) << NEWHOME_FLAGS_DPI_SHIFT) |

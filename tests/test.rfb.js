@@ -559,20 +559,20 @@ describe('Remote Frame Buffer protocol client', function () {
                                                                                new Uint8Array([97, 98, 99]));
                 });
 
-                it('should mask unsupported characters', function () {
+                it('should encode non-Latin text as UTF-8', function () {
                     client.clipboardPasteFrom('abc€');
 
                     expect(RFB.messages.clientCutText).to.have.been.calledOnce;
                     expect(RFB.messages.clientCutText).to.have.been.calledWith(client._sock,
-                                                                               new Uint8Array([97, 98, 99, 63]));
+                                                                               new Uint8Array([97, 98, 99, 226, 130, 172]));
                 });
 
-                it('should mask characters, not UTF-16 code points', function () {
+                it('should encode supplementary Unicode code points as UTF-8', function () {
                     client.clipboardPasteFrom('😂');
 
                     expect(RFB.messages.clientCutText).to.have.been.calledOnce;
                     expect(RFB.messages.clientCutText).to.have.been.calledWith(client._sock,
-                                                                               new Uint8Array([63]));
+                                                                               new Uint8Array([240, 159, 152, 130]));
                 });
 
                 it('should send an notify if extended clipboard is supported by server', function () {

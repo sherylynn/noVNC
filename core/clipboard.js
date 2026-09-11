@@ -124,7 +124,11 @@ export default class AsyncClipboard {
     }
 
     _hasNonAscii(text) {
-        return typeof text === 'string' && /[^\x00-\x7f]/.test(text);
+        if (typeof text !== 'string') return false;
+        for (let i = 0; i < text.length; i++) {
+            if (text.charCodeAt(i) > 0x7f) return true;
+        }
+        return false;
     }
 
     _normalizeRemoteText(text) {
@@ -273,6 +277,19 @@ export default class AsyncClipboard {
             event.stopImmediatePropagation();
             this.onshortcut('copy', event.metaKey && !event.ctrlKey);
         } else if (key === 'v') {
+            const controllerPriority = this._entryControllerPriorityActive();
+
+            // Once the user is already working inside Linux, Ctrl/Cmd+V must
+            // paste the existing X11 clipboard. Letting the browser perform a
+            // local paste here would emit a paste event containing the PC/Mac
+            // clipboard and silently overwrite a value just copied in Linux.
+            if (!controllerPriority) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                this.onshortcut('paste', event.metaKey && !event.ctrlKey);
+                return;
+            }
+
             this._explicitPasteShortcut = true;
             this._explicitPasteUsedMeta = event.metaKey && !event.ctrlKey;
             // Keyboard's normal handler would send Ctrl/Meta+V before the RFB

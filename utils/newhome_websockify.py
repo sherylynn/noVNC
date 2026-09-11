@@ -27,6 +27,18 @@ MAX_LOG = 4 * 1024 * 1024
 DROP_KEYS = {"text", "value", "data", "password", "credentials", "clipboardtext"}
 write_lock = threading.Lock()
 original_do_post = WebSockifyRequestHandler.do_POST
+original_end_headers = WebSockifyRequestHandler.end_headers
+
+
+def newhome_end_headers(self):
+    # A single stale vnc.html can import a newer cached module graph (or the
+    # reverse) and make the UI fail during startup. These files are small and
+    # are part of one tightly coupled browser application, so always validate
+    # them with the server instead of relying on browser freshness heuristics.
+    path = urlparse(self.path).path
+    if path == "/vnc.html" or path.endswith((".js", ".css")):
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+    original_end_headers(self)
 
 
 def sanitize(value, depth=0):
@@ -128,6 +140,7 @@ def newhome_do_post(self):
 
 
 WebSockifyRequestHandler.do_POST = newhome_do_post
+WebSockifyRequestHandler.end_headers = newhome_end_headers
 
 if __name__ == "__main__":
     websocketproxy.websockify_init()
