@@ -325,6 +325,7 @@ export default class RFB extends EventTargetMixin {
         this._qualityLevel = 6;
         this._compressionLevel = 2;
         this._newHomeLastSentDPI = null;
+        this._newHomeLastSentRenderMilli = null;
     }
 
     // ===== PROPERTIES =====
@@ -898,15 +899,16 @@ export default class RFB extends EventTargetMixin {
         this._resizeTimeout = null;
 
         const target = this._newHomeRemoteGeometry();
+        const renderMilli = Math.max(1, Math.min(4095,
+            Math.round(this._display.scale * 1000)));
 
         // Do we actually change anything?
         if (target.width === this._fbWidth && target.height === this._fbHeight &&
-            this._newHomeLastSentDPI === target.dpi) {
+            this._newHomeLastSentDPI === target.dpi &&
+            this._newHomeLastSentRenderMilli === renderMilli) {
             return;
         }
 
-        const renderMilli = Math.max(1, Math.min(4095,
-            Math.round(this._display.scale * 1000)));
         const flags = target.enabled ?
             ((NEWHOME_FLAGS_MAGIC |
               ((target.dpi & NEWHOME_FLAGS_VALUE_MASK) << NEWHOME_FLAGS_DPI_SHIFT) |
@@ -915,6 +917,7 @@ export default class RFB extends EventTargetMixin {
         this._pendingRemoteResize = true;
         this._lastResize = Date.now();
         this._newHomeLastSentDPI = target.dpi;
+        this._newHomeLastSentRenderMilli = renderMilli;
         RFB.messages.setDesktopSize(this._sock,
                                     target.width, target.height,
                                     this._screenID, flags);

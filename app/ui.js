@@ -18,7 +18,7 @@ import Keyboard from "../core/input/keyboard.js";
 // Keep this version synchronized with vnc.html. Firefox can retain an older
 // transitive ES-module graph even after a page reload unless the import URL
 // changes explicitly.
-import RFB from "../core/rfb.js?v=20260911-resize-telemetry-v2";
+import RFB from "../core/rfb.js?v=20260911-resize-telemetry-v3";
 import WakeLockManager from './wakelock.js';
 import * as WebUtil from "./webutil.js";
 
