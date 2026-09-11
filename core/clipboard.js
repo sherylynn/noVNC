@@ -20,6 +20,7 @@ export default class AsyncClipboard {
 
         this._eventHandlers = {
             'focus': this._handleFocus.bind(this),
+            'copy': this._handleCopy.bind(this),
             'paste': this._handlePaste.bind(this),
             'keydown': this._handlePasteKeyDown.bind(this),
             'keyup': this._handlePasteKeyUp.bind(this),
@@ -108,6 +109,15 @@ export default class AsyncClipboard {
         this._explicitPasteUsedMeta = false;
     }
 
+    _handleCopy(event) {
+        if (this._isEditableTarget(event.target)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        // This also covers the browser context menu's Copy command. x11vnc
+        // will return the new X11 clipboard contents to the browser afterward.
+        this.onshortcut('copy', false);
+    }
+
     async _handleContextMenu(event) {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
@@ -144,6 +154,7 @@ export default class AsyncClipboard {
 
     grab() {
         if (!this._target) return;
+        this._eventTarget.addEventListener('copy', this._eventHandlers.copy, true);
         this._eventTarget.addEventListener('paste', this._eventHandlers.paste, true);
         this._eventTarget.addEventListener('keydown', this._eventHandlers.keydown, true);
         this._eventTarget.addEventListener('keyup', this._eventHandlers.keyup, true);
@@ -158,6 +169,7 @@ export default class AsyncClipboard {
 
     ungrab() {
         if (!this._target) return;
+        this._eventTarget.removeEventListener('copy', this._eventHandlers.copy, true);
         this._eventTarget.removeEventListener('paste', this._eventHandlers.paste, true);
         this._eventTarget.removeEventListener('keydown', this._eventHandlers.keydown, true);
         this._eventTarget.removeEventListener('keyup', this._eventHandlers.keyup, true);

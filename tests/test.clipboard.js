@@ -129,6 +129,20 @@ describe('Async Clipboard', function () {
         expect(clipboard.onshortcut.calledOnceWith('copy', true)).to.be.true;
     });
 
+    it('maps a browser copy event to a remote copy shortcut', function () {
+        clipboard.onshortcut = sinon.spy();
+        const event = {
+            target: targetMock,
+            preventDefault: sinon.spy(),
+            stopImmediatePropagation: sinon.spy(),
+        };
+
+        clipboard._handleCopy(event);
+
+        expect(event.preventDefault.calledOnce).to.be.true;
+        expect(clipboard.onshortcut.calledOnceWith('copy', false)).to.be.true;
+    });
+
     it('falls back to a remote paste shortcut when no paste event arrives', function () {
         const clock = sinon.useFakeTimers();
         clipboard.onshortcut = sinon.spy();
