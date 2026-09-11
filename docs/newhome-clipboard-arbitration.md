@@ -17,6 +17,19 @@ Android 与 Linux 位于同一台设备，现有 NewHome bridge 已经让二者�
 
 复制和粘贴的用户意图再决定何时把一个槽位送到另一侧。
 
+## PC/Mac ↔ Linux 的文本传输只走 RFB
+
+PC/Mac 与 Linux 之间不再通过 `/newhome-clipboard`、NewHome 4715 或额外 HTTP 接口绕行。noVNC 的 VNC 文本剪贴板本身就是唯一传输路径：
+
+- **Browser → Linux**：经典 `ClientCutText` 直接发送 UTF-8 bytes；Extended Clipboard 继续使用协议已有的 UTF-8 编码。
+- **Linux → Browser**：x11vnc 常把 UTF-8 bytes 塞进经典 `ServerCutText` 的历史 8-bit 字段，noVNC 在写浏览器系统剪贴板前把这种 byte-string 按严格 UTF-8 恢复。
+- 如果经典 `ServerCutText` 的 bytes 不是合法 UTF-8，则保持原来的 Latin-1/RFB 文本，不做破坏性转换。
+- Extended Clipboard 已经完成 UTF-8 解码，不进行第二次解码。
+
+这层兼容只发生在 noVNC/RFB 边界，不再 hook x11vnc 的 `XConvertSelection`、`XChangeProperty` 或 X11 clipboard state machine。
+
+NewHome 4715 仍可继续负责**同一设备内部 Android ↔ Linux/X11** 的同步，但它不参与浏览器 ↔ Linux 的 VNC 文本传输。
+
 ## 核心规则
 
 ### 1. 鼠标进入 noVNC：只改变优先级，不立即覆盖
@@ -34,7 +47,7 @@ Android 与 Linux 位于同一台设备，现有 NewHome bridge 已经让二者�
 浏览器给出真实 `paste` event 时，`event.clipboardData` 是最强证据：
 
 1. 更新 `controller slot`；
-2. 先通过 RFB 把该文本写入 X11；
+2. 通过 RFB `ClientCutText` / Extended Clipboard 把文本写入 Linux；
 3. 再向 Linux 发送 Ctrl+V。
 
 如果浏览器没有给出 paste event，则只有在 5 秒入口窗口内才使用已缓存的 `controller slot`；超过窗口后直接发送 Linux Ctrl+V，不碰当前 remote clipboard。
@@ -43,7 +56,7 @@ Android 与 Linux 位于同一台设备，现有 NewHome bridge 已经让二者�
 
 普通右键必须仍然是 Linux 的右键。
 
-在入口窗口内，右键 `pointerdown` 会先把已知的 `controller slot` stage 到远端 X11，然后原始右键继续发送给 Linux。用户随后在 Linux 原生菜单中点“粘贴”时，使用的就是 PC/Mac 内容。
+在入口窗口内，右键 `pointerdown` 会先把已知的 `controller slot` 通过 RFB stage 到远端 X11，然后原始右键继续发送给 Linux。用户随后在 Linux 原生菜单中点“粘贴”时，使用的就是 PC/Mac 内容。
 
 noVNC 自己的浏览器 context menu 被抑制，并且不会在 `contextmenu` 中调用 `navigator.clipboard.readText()`，因此不会再出现 Firefox/Safari 那个突兀的浏览器“粘贴”授权菜单。
 
@@ -60,9 +73,10 @@ noVNC 自己的浏览器 context menu 被抑制，并且不会在 `contextmenu` 
 
 RFB 收到新的 server clipboard 时：
 
-1. 更新 `remote slot`；
-2. 尝试 `navigator.clipboard.writeText()` 写到 PC/Mac；
-3. 如果浏览器要求新的 user activation，则保留为 pending，在下一次可信点击/聚焦时重试。
+1. 对经典 ServerCutText 做严格 UTF-8 byte-string 恢复，失败则保留原文；
+2. 更新 `remote slot`；
+3. 尝试 `navigator.clipboard.writeText()` 写到 PC/Mac；
+4. 如果浏览器要求新的 user activation，则保留为 pending，在下一次可信点击时重试。
 
 如果服务器返回的内容与 noVNC 几秒内刚从 `controller slot` 注入的内容相同，则视作 echo/ack，不当作新的 Linux Copy，也不进行无意义的反向覆盖。
 
@@ -78,7 +92,7 @@ PC / Mac system clipboard
 │ clipboard slot      │
 └─────────────────────┘
         │
-        │ intent-aware RFB staging
+        │ intent-aware RFB ClientCutText / Extended Clipboard
         ▼
 ┌─────────────────────┐
 │ X11 CLIPBOARD       │◄──────────────┐
