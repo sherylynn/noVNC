@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "NewHome noVNC Clipboard Bridge",
+  "version": "0.1.0",
+  "description": "Trusted clipboard bridge for the NewHome noVNC remote desktop.",
+  "permissions": [
+    "clipboardRead",
+    "clipboardWrite"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "newhome-novnc-clipboard@sherylynn.local"
+    }
+  }
+}
