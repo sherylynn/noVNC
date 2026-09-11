@@ -6,7 +6,6 @@
 
 import * as Log from './util/logging.js';
 import { browserAsyncClipboardSupport } from './util/browser.js';
-import Diagnostics from './diagnostics.js';
 
 // NEWHOME_EXPLICIT_PASTE / NEWHOME_CLIPBOARD_ARBITER
 //
@@ -35,8 +34,6 @@ export default class AsyncClipboard {
         this._explicitPasteShortcut = false;
         this._explicitPasteUsedMeta = false;
         this._pasteFallbackTimer = null;
-        this._copyShortcutInFlight = false;
-        this._copyShortcutResetTimer = null;
 
         // Controller (PC/Mac) clipboard slot.  We only update this from a
         // browser paste event or from a successful permission-safe async read.
@@ -90,10 +87,8 @@ export default class AsyncClipboard {
         try {
             const status = await browserAsyncClipboardSupport();
             this._isAvailable = (status === 'available');
-            Diagnostics.capture('clipboard', 'capability', { status });
         } catch {
             this._isAvailable = false;
-            Diagnostics.capture('clipboard', 'capability', { status: 'exception' });
         }
         return this._isAvailable;
     }
@@ -116,16 +111,9 @@ export default class AsyncClipboard {
         try {
             const text = await navigator.clipboard.readText();
             this._rememberControllerClipboard(text, source);
-            Diagnostics.capture('clipboard', 'controller-read-success', {
-                source, chars: text.length,
-            });
             return true;
         } catch (error) {
             Log.Debug("Controller clipboard refresh unavailable: ", error);
-            Diagnostics.capture('clipboard', 'controller-read-failed', {
-                source, name: error.name, message: error.message,
-                userActivation: navigator.userActivation?.isActive || false,
-            });
             return false;
         }
     }
@@ -156,10 +144,6 @@ export default class AsyncClipboard {
         }
         try {
             await navigator.clipboard.writeText(text);
-            Diagnostics.capture('clipboard', 'controller-write-success', {
-                chars: text.length,
-                userActivation: navigator.userActivation?.isActive || false,
-            });
             if (this._pendingRemoteText === text) {
                 this._pendingRemoteText = null;
             }
@@ -168,10 +152,6 @@ export default class AsyncClipboard {
             // Do not discard a remote clipboard update just because this browser
             // wants a newer user gesture. The next trusted interaction retries it.
             Log.Warn("Remote clipboard write deferred until user activation: ", error);
-            Diagnostics.capture('clipboard', 'controller-write-deferred', {
-                chars: text.length, name: error.name, message: error.message,
-                userActivation: navigator.userActivation?.isActive || false,
-            });
             return false;
         }
     }
@@ -251,53 +231,13 @@ export default class AsyncClipboard {
 
         const key = event.key.toLowerCase();
         if (key === 'c') {
-            Diagnostics.capture('clipboard', 'copy-keydown', {
-                meta: event.metaKey, ctrl: event.ctrlKey,
-                hasRemote: typeof this._remoteText === 'string',
-                hasPendingRemote: this._pendingRemoteText !== null,
-            });
             // The controller shortcut means "ask Linux to copy".  The resulting
             // Linux/Android clipboard content is learned later from RFB, not from
             // the controller clipboard slot.
-            // Do not prevent the browser's native copy action. It emits a
-            // trusted ClipboardEvent immediately after keydown, which is the
-            // permission-safe opportunity to write the latest remote value to
-            // the controller OS clipboard (notably in Firefox).
+            event.preventDefault();
             event.stopImmediatePropagation();
-            this._copyShortcutInFlight = true;
-            clearTimeout(this._copyShortcutResetTimer);
-            this._copyShortcutResetTimer = setTimeout(() => {
-                this._copyShortcutInFlight = false;
-                this._copyShortcutResetTimer = null;
-            }, 0);
             this.onshortcut('copy', event.metaKey && !event.ctrlKey);
         } else if (key === 'v') {
-            const entryPriority = this._entryControllerPriorityActive();
-            Diagnostics.capture('clipboard', 'paste-keydown', {
-                meta: event.metaKey, ctrl: event.ctrlKey,
-                entryPriority,
-                hasController: typeof this._controllerText === 'string',
-            });
-
-            // Once the user is established inside the remote desktop, Ctrl+V
-            // is a Linux-local operation. Prevent Firefox/Chromium from
-            // producing a browser paste event, otherwise that event would
-            // overwrite the X11 clipboard with the controller clipboard before
-            // Linux gets to consume its own freshly copied value.
-            if (!entryPriority) {
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                clearTimeout(this._pasteFallbackTimer);
-                this._pasteFallbackTimer = null;
-                this._explicitPasteShortcut = false;
-                this._explicitPasteUsedMeta = false;
-                Diagnostics.capture('clipboard', 'linux-local-paste', {
-                    meta: event.metaKey, ctrl: event.ctrlKey,
-                });
-                this.onshortcut('paste', event.metaKey && !event.ctrlKey);
-                return;
-            }
-
             this._explicitPasteShortcut = true;
             this._explicitPasteUsedMeta = event.metaKey && !event.ctrlKey;
             // Keyboard's normal handler would send Ctrl/Meta+V before the RFB
@@ -330,11 +270,6 @@ export default class AsyncClipboard {
         if ((this._explicitPasteShortcut && key === 'v') ||
             ((event.ctrlKey || event.metaKey) && key === 'c')) {
             event.stopImmediatePropagation();
-            if (key === 'c') {
-                // The RFB clipboard update often arrives before keyup. Retry
-                // while this trusted keyboard gesture is still active.
-                this._flushPendingRemoteClipboard();
-            }
         }
     }
 
@@ -353,9 +288,6 @@ export default class AsyncClipboard {
         // paste should use the controller clipboard, regardless of how long the
         // pointer has been inside noVNC.
         this._rememberControllerClipboard(text, 'paste-event');
-        Diagnostics.capture('clipboard', 'browser-paste-event', {
-            chars: text.length,
-        });
         this._lastInjectedControllerText = text;
         this._lastInjectedControllerAt = Date.now();
         this.onpaste(text, true, this._explicitPasteUsedMeta);
@@ -364,35 +296,9 @@ export default class AsyncClipboard {
 
     _handleCopy(event) {
         if (this._isEditableTarget(event.target)) return;
-
-        // ClipboardEvent.setData() is synchronous and tied to the user's copy
-        // gesture, so it works where an asynchronous navigator.clipboard write
-        // from a later RFB message is rejected. Prefer a pending fresh server
-        // value, otherwise use the latest remote clipboard/PRIMARY selection.
-        const text = this._pendingRemoteText ?? this._remoteText;
-        let wroteBrowserClipboard = false;
-        if (typeof text === 'string' && event.clipboardData?.setData) {
-            event.clipboardData.setData('text/plain', text);
-            wroteBrowserClipboard = true;
-            this._pendingRemoteText = null;
-            this._rememberControllerClipboard(text, 'remote-copy-event');
-        }
-        Diagnostics.capture('clipboard', 'browser-copy-event', {
-            wroteBrowserClipboard,
-            chars: typeof text === 'string' ? text.length : 0,
-            shortcutInFlight: this._copyShortcutInFlight,
-        });
-
         event.preventDefault();
         event.stopImmediatePropagation();
-        clearTimeout(this._copyShortcutResetTimer);
-        this._copyShortcutResetTimer = null;
-        if (this._copyShortcutInFlight) {
-            this._copyShortcutInFlight = false;
-        } else {
-            // Context-menu Copy can produce a copy event without keydown.
-            this.onshortcut('copy', false);
-        }
+        this.onshortcut('copy', false);
     }
 
     _handleContextMenu(event) {
@@ -431,9 +337,6 @@ export default class AsyncClipboard {
             this._lastInjectedControllerText === text &&
             (Date.now() - this._lastInjectedControllerAt) <= LOCAL_INJECTION_ECHO_MS;
         if (injectedEcho) {
-            Diagnostics.capture('clipboard', 'rfb-receive-echo', {
-                chars: text.length,
-            });
             Log.Debug("Remote clipboard matches recent controller injection; treating as echo");
             this._pendingRemoteText = null;
             return true;
@@ -443,10 +346,6 @@ export default class AsyncClipboard {
         // If the browser blocks the write now, retain it until the next trusted
         // pointer/focus interaction.
         this._pendingRemoteText = text;
-        Diagnostics.capture('clipboard', 'rfb-receive-remote', {
-            chars: text.length,
-            hasAsyncWrite: Boolean(navigator.clipboard?.writeText),
-        });
         if (navigator?.clipboard?.writeText) {
             this._tryWriteRemoteClipboard(text);
         }
@@ -482,11 +381,8 @@ export default class AsyncClipboard {
         this._target.removeEventListener('focus', this._eventHandlers.focus);
         this._explicitPasteShortcut = false;
         this._explicitPasteUsedMeta = false;
-        this._copyShortcutInFlight = false;
         clearTimeout(this._pasteFallbackTimer);
         this._pasteFallbackTimer = null;
-        clearTimeout(this._copyShortcutResetTimer);
-        this._copyShortcutResetTimer = null;
         this._pendingRemoteText = null;
         this._insideRemote = false;
         this._enteredAt = 0;
