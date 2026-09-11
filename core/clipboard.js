@@ -18,6 +18,12 @@ export default class AsyncClipboard {
         this._explicitPasteUsedMeta = false;
         this._pasteFallbackTimer = null;
 
+        // Latest clipboard value received from the remote desktop that has not
+        // yet been confirmed written to the controller OS clipboard.
+        // Firefox/Safari can expose navigator.clipboard.writeText() while still
+        // requiring a fresh trusted user activation for the actual write.
+        this._pendingRemoteText = null;
+
         this._eventHandlers = {
             'focus': this._handleFocus.bind(this),
             'copy': this._handleCopy.bind(this),
@@ -25,6 +31,7 @@ export default class AsyncClipboard {
             'keydown': this._handlePasteKeyDown.bind(this),
             'keyup': this._handlePasteKeyUp.bind(this),
             'contextmenu': this._handleContextMenu.bind(this),
+            'pointerdown': this._handleUserActivation.bind(this),
         };
 
         // ===== EVENT HANDLERS =====
@@ -46,7 +53,33 @@ export default class AsyncClipboard {
         return this._isAvailable;
     }
 
+    async _tryWriteRemoteClipboard(text) {
+        if (typeof text !== 'string' || !navigator?.clipboard?.writeText) {
+            return false;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+            if (this._pendingRemoteText === text) {
+                this._pendingRemoteText = null;
+            }
+            return true;
+        } catch (error) {
+            // Do not discard a remote clipboard update just because this browser
+            // wants a newer user gesture. The next trusted interaction retries it.
+            Log.Warn("Remote clipboard write deferred until user activation: ", error);
+            return false;
+        }
+    }
+
+    _flushPendingRemoteClipboard() {
+        if (this._pendingRemoteText === null) return;
+        // Calling writeText from inside a trusted event handler is important for
+        // browsers that enforce transient user activation.
+        this._tryWriteRemoteClipboard(this._pendingRemoteText);
+    }
+
     async _handleFocus(event) {
+        this._flushPendingRemoteClipboard();
         if (!(await this._ensureAvailable())) return;
         try {
             const text = await navigator.clipboard.readText();
@@ -54,6 +87,11 @@ export default class AsyncClipboard {
         } catch (error) {
             Log.Error("Clipboard read failed: ", error);
         }
+    }
+
+    _handleUserActivation(event) {
+        if (!event.isTrusted) return;
+        this._flushPendingRemoteClipboard();
     }
 
     _handlePasteKeyDown(event) {
@@ -121,6 +159,11 @@ export default class AsyncClipboard {
     async _handleContextMenu(event) {
         if (event.target !== this._target &&
             event.target?.id !== 'noVNC_keyboardinput') return;
+
+        // A context-menu invocation is a trusted user action. Retry the newest
+        // remote clipboard first before attempting controller -> remote sync.
+        this._flushPendingRemoteClipboard();
+
         // Firefox does not expose clipboard-read through the Permissions API,
         // but permits an explicit read attempt from a user-triggered action.
         if (!navigator?.clipboard?.readText) return;
@@ -145,11 +188,19 @@ export default class AsyncClipboard {
     // ===== PUBLIC METHODS =====
 
     writeClipboard(text) {
-        // Can lazily check cached availability
-        if (!this._isAvailable) return false;
-        navigator.clipboard.writeText(text)
-            .catch(error => Log.Error("Clipboard write failed: ", error));
-        return true;
+        // Always remember the newest remote clipboard. Do not gate the write on
+        // Permissions API detection: Firefox/Safari can report permission
+        // probing as unsupported while writeText() itself works after a gesture.
+        this._pendingRemoteText = text;
+
+        if (navigator?.clipboard?.writeText) {
+            this._tryWriteRemoteClipboard(text);
+        }
+
+        // Keep RFB's normal "clipboard" event as a fallback. Previously this
+        // returned true before writeText()'s Promise settled, so a rejected
+        // browser write silently swallowed Linux -> controller clipboard data.
+        return false;
     }
 
     grab() {
@@ -159,6 +210,7 @@ export default class AsyncClipboard {
         this._eventTarget.addEventListener('keydown', this._eventHandlers.keydown, true);
         this._eventTarget.addEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.addEventListener('contextmenu', this._eventHandlers.contextmenu, true);
+        this._eventTarget.addEventListener('pointerdown', this._eventHandlers.pointerdown, true);
         this._ensureAvailable()
             .then((isAvailable) => {
                 if (isAvailable) {
@@ -174,10 +226,12 @@ export default class AsyncClipboard {
         this._eventTarget.removeEventListener('keydown', this._eventHandlers.keydown, true);
         this._eventTarget.removeEventListener('keyup', this._eventHandlers.keyup, true);
         this._eventTarget.removeEventListener('contextmenu', this._eventHandlers.contextmenu, true);
+        this._eventTarget.removeEventListener('pointerdown', this._eventHandlers.pointerdown, true);
         this._target.removeEventListener('focus', this._eventHandlers.focus);
         this._explicitPasteShortcut = false;
         this._explicitPasteUsedMeta = false;
         clearTimeout(this._pasteFallbackTimer);
         this._pasteFallbackTimer = null;
+        this._pendingRemoteText = null;
     }
 }
