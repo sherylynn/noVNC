@@ -381,6 +381,11 @@ export default class RFB extends EventTargetMixin {
     get resizeSession() { return this._resizeSession; }
     set resizeSession(resize) {
         this._resizeSession = resize;
+        // applyResizeMode() changes scaleViewport before resizeSession. When
+        // entering remote mode, the first setter therefore briefly applies
+        // the non-scaling 1:1 branch. Recompute now that the complete mode is
+        // known, otherwise the Retina framebuffer remains visibly zoomed.
+        this._updateScale();
         if (resize) {
             this._requestRemoteResize();
         }

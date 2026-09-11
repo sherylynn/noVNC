@@ -54,6 +54,13 @@ only 1232 CSS pixels available. Measuring the child creates a feedback loop and
 renders a 2x Linux desktop at 1:1 CSS scale. The internal screen element also
 keeps zero minimum dimensions so its canvas cannot enlarge the measured layout.
 
+Entering remote-resize mode must explicitly recalculate canvas scaling after
+`resizeSession` changes. The UI sets `scaleViewport` first and `resizeSession`
+second; without recalculation in the second setter, the temporary non-scaling
+state leaves the Retina framebuffer at 1:1 and makes the entire canvas appear
+zoomed. Local-scaling mode does not expose this bug because it always calls
+autoscale directly.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

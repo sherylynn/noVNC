@@ -1109,6 +1109,16 @@ describe('Remote Frame Buffer protocol client', function () {
             expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
         });
 
+        it('should refit the canvas when remote resize is enabled', function () {
+            client.resizeSession = false;
+            sinon.spy(client._display, "autoscale");
+
+            client.resizeSession = true;
+
+            expect(client._display.autoscale).to.have.been.calledOnce;
+            expect(client._display.autoscale).to.have.been.calledWith(70, 80);
+        });
+
         it('should request a resize when initially connecting', function () {
             // Create a new object that hasn't yet seen a
             // ExtendedDesktopSize rect
