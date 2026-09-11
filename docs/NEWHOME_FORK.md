@@ -77,6 +77,11 @@ dimensions and DPI remain identical, so the Linux-side diagnostic log captures
 render-only changes. Render scale must not participate in every resize-response
 deduplication decision because that can create an acknowledgement feedback loop.
 
+Reserved DPI field values 1 and 2 are telemetry-only reports for local-scale and
+remote-resize modes respectively. The x11vnc adapter logs them but must not run
+the Linux display-profile helper. This allows the known-good local canvas scale
+to be compared with remote mode without changing framebuffer geometry.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

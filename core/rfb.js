@@ -395,6 +395,8 @@ export default class RFB extends EventTargetMixin {
             // of every resize acknowledgement, which can create feedback.
             if (enteringRemoteResize) this._newHomeLastSentDPI = null;
             this._requestRemoteResize();
+        } else if (this._scaleViewport) {
+            this._reportNewHomeRenderTelemetry('local');
         }
     }
 
@@ -873,6 +875,23 @@ export default class RFB extends EventTargetMixin {
             height: Math.max(1, Math.floor(rect.height * scale)),
             dpi: Math.max(48, Math.min(65535, Math.round(NEWHOME_BASE_DPI * scale))),
         };
+    }
+
+    _reportNewHomeRenderTelemetry(mode) {
+        if (this._rfbConnectionState !== 'connected' || this._viewOnly ||
+            !this._supportsSetDesktopSize || this._fbWidth < 320 ||
+            this._fbHeight < 240) return;
+
+        const renderMilli = Math.max(1, Math.min(4095,
+            Math.round(this._display.scale * 1000)));
+        // DPI values 1..15 are reserved as telemetry-only mode identifiers;
+        // the preload adapter logs these without applying a Linux profile.
+        const modeCode = mode === 'local' ? 1 : 2;
+        const flags = ((NEWHOME_FLAGS_MAGIC |
+            (modeCode << NEWHOME_FLAGS_DPI_SHIFT) | renderMilli) >>> 0);
+        RFB.messages.setDesktopSize(this._sock,
+                                    this._fbWidth, this._fbHeight,
+                                    this._screenID, flags);
     }
 
     // Requests a change of remote desktop size. This message is an extension
