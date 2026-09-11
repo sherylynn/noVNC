@@ -61,6 +61,11 @@ state leaves the Retina framebuffer at 1:1 and makes the entire canvas appear
 zoomed. Local-scaling mode does not expose this bug because it always calls
 autoscale directly.
 
+The `vnc.html -> app/ui.js -> core/rfb.js` imports carry a NewHome build query
+version. Update it whenever remote-resize or clipboard runtime behavior changes.
+Firefox may otherwise reuse an older transitive ES-module graph even after a
+normal reload, making the page UI and the loaded RFB implementation disagree.
+
 ## HTTPS launcher
 
 The bundled launcher supports the NewHome automatic local-CA HTTPS setup used by

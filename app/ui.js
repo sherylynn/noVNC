@@ -15,7 +15,10 @@ import { setCapture, getPointerEvent } from '../core/util/events.js';
 import KeyTable from "../core/input/keysym.js";
 import keysyms from "../core/input/keysymdef.js";
 import Keyboard from "../core/input/keyboard.js";
-import RFB from "../core/rfb.js";
+// Keep this version synchronized with vnc.html. Firefox can retain an older
+// transitive ES-module graph even after a page reload unless the import URL
+// changes explicitly.
+import RFB from "../core/rfb.js?v=20260911-resize3";
 import WakeLockManager from './wakelock.js';
 import * as WebUtil from "./webutil.js";
 
