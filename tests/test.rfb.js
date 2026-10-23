@@ -1157,6 +1157,24 @@ describe('Remote Frame Buffer protocol client', function () {
                 sinon.match.object, 40, 50, 0x7890abcd, 0x12345678);
         });
 
+        it('should use standards-only resize flags for NewHome native RFB', function () {
+            client._setDesktopName('NewHome compositor');
+            container.style.width = '40px';
+            container.style.height = '50px';
+            fakeResizeObserver.fire();
+
+            expect(client._newHomeUsesNativeRFB()).to.equal(true);
+            expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
+            expect(RFB.messages.setDesktopSize).to.have.been.calledWith(
+                sinon.match.object, 40, 50, 0x7890abcd, 0x12345678);
+        });
+
+        it('should not send legacy render telemetry to NewHome native RFB', function () {
+            client._setDesktopName('NewHome compositor');
+            client._reportNewHomeRenderTelemetry('remote');
+            expect(RFB.messages.setDesktopSize).to.not.have.been.called;
+        });
+
         it('should not request the same size twice', function () {
             container.style.width = '40px';
             container.style.height = '50px';

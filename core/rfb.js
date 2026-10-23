@@ -44,7 +44,10 @@ import H264Decoder from "./decoders/h264.js";
 const DISCONNECT_TIMEOUT = 3;
 const DEFAULT_BACKGROUND = 'rgb(40, 40, 40)';
 
-// NewHome private ExtendedDesktopSize flags: high 16 bits "NH", low 16 bits DPI.
+// NEWHOME_NATIVE_RFB: NewHome compositor servers advertise a desktop name
+// beginning with "NewHome" and use standards-only ExtendedDesktopSize. Legacy
+// x11vnc keeps the private resize metadata during the migration window.
+// NewHome private ExtendedDesktopSize flags for legacy x11vnc only.
 const NEWHOME_FLAGS_MAGIC = 0x4e000000;
 const NEWHOME_FLAGS_DPI_SHIFT = 12;
 const NEWHOME_FLAGS_VALUE_MASK = 0x00000fff;
@@ -816,6 +819,26 @@ export default class RFB extends EventTargetMixin {
         this._fixScrollbars();
     }
 
+    _newHomeBackendMode() {
+        const params = new URLSearchParams(window.location.search);
+        const configured = (params.get("newhome_backend") || "").trim().toLowerCase();
+        if (configured === "legacy-x11vnc") return "legacy-x11vnc";
+        if (configured === "native") return "native";
+        const desktopName = this._fbName.toLowerCase();
+        if (desktopName.startsWith("newhomelegacyx11") ||
+            desktopName.includes("wayvnc")) return "legacy-x11vnc";
+        if (this._fbName.startsWith("NewHome")) return "native";
+        return "standard";
+    }
+
+    _newHomeUsesNativeRFB() {
+        return this._newHomeBackendMode() === "native";
+    }
+
+    _newHomeUsesLegacyResizeMetadata() {
+        return this._newHomeBackendMode() === "legacy-x11vnc";
+    }
+
     _newHomeHiDPISettings() {
         const params = new URLSearchParams(window.location.search);
         const value = (params.get("hidpi") || "auto").trim().toLowerCase();
@@ -848,19 +871,25 @@ export default class RFB extends EventTargetMixin {
         const rect = this._target.getBoundingClientRect();
         const hidpi = this._newHomeHiDPISettings();
         const scale = hidpi.enabled ? hidpi.scale : 1.0;
+        const width = Math.max(1, Math.floor(rect.width * scale));
         return {
             enabled: hidpi.enabled,
             scale: scale,
-            // Termux:X11 rounds framebuffer width down to an 8-pixel boundary.
-            // Request the same geometry so the server response does not create
-            // an endless 2468 -> 2464 resize feedback loop on Retina screens.
-            width: Math.max(8, Math.floor(rect.width * scale / 8) * 8),
+            // Legacy Termux:X11 rounds framebuffer width down to an 8-pixel
+            // boundary. Native NewHome RFB owns exact output geometry and must
+            // receive the browser-requested pixel width unchanged.
+            width: this._newHomeUsesLegacyResizeMetadata() ?
+                Math.max(8, Math.floor(width / 8) * 8) : width,
             height: Math.max(1, Math.floor(rect.height * scale)),
             dpi: Math.max(48, Math.min(65535, Math.round(NEWHOME_BASE_DPI * scale))),
         };
     }
 
     _reportNewHomeRenderTelemetry(mode) {
+        // Native NewHome RFB consumes canonical compositor generation/damage
+        // directly, so synthetic x11vnc SetDesktopSize telemetry would only
+        // churn the compositor output state.
+        if (!this._newHomeUsesLegacyResizeMetadata()) return;
         if (this._rfbConnectionState !== 'connected' || this._viewOnly ||
             !this._supportsSetDesktopSize || this._fbWidth < 320 ||
             this._fbHeight < 240) return;
@@ -922,22 +951,25 @@ export default class RFB extends EventTargetMixin {
 
         const target = this._newHomeRemoteGeometry();
 
-        // Do we actually change anything?
+        const legacyResizeMetadata = this._newHomeUsesLegacyResizeMetadata();
+
+        // Do we actually change anything? DPI is a legacy x11vnc side-channel
+        // value. Native NewHome RFB only changes canonical output pixel geometry.
         if (target.width === this._fbWidth && target.height === this._fbHeight &&
-            this._newHomeLastSentDPI === target.dpi) {
+            (!legacyResizeMetadata || this._newHomeLastSentDPI === target.dpi)) {
             return;
         }
 
         const renderMilli = Math.max(1,
                                      Math.min(4095, Math.round(this._display.scale * 1000)));
-        const flags = target.enabled ?
+        const flags = !legacyResizeMetadata ? this._screenFlags : (target.enabled ?
             ((NEWHOME_FLAGS_MAGIC |
               ((target.dpi & NEWHOME_FLAGS_VALUE_MASK) << NEWHOME_FLAGS_DPI_SHIFT) |
-              renderMilli) >>> 0) : this._screenFlags;
+              renderMilli) >>> 0) : this._screenFlags);
 
         this._pendingRemoteResize = true;
         this._lastResize = Date.now();
-        this._newHomeLastSentDPI = target.dpi;
+        if (legacyResizeMetadata) this._newHomeLastSentDPI = target.dpi;
         RFB.messages.setDesktopSize(this._sock,
                                     target.width, target.height,
                                     this._screenID, flags);
