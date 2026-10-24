@@ -1134,7 +1134,7 @@ const UI = {
 
         if (typeof password === 'undefined') {
             password = UI.getSetting('password');
-            UI.reconnectPassword = password;
+            UI.reconnectPassword = UI.getSetting('reconnect') ? password : null;
         }
 
         if (password === null) {
@@ -1434,7 +1434,7 @@ const UI = {
         inputElemPassword.value = "";
 
         UI.rfb.sendCredentials({ username: username, password: password });
-        UI.reconnectPassword = password;
+        UI.reconnectPassword = UI.getSetting('reconnect') ? password : null;
         document.getElementById('noVNC_credentials_dlg')
             .classList.remove('noVNC_open');
     },

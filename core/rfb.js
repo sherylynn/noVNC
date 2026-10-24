@@ -1974,6 +1974,7 @@ export default class RFB extends EventTargetMixin {
                 false, ["sign"]);
             const response = await window.crypto.subtle.sign("HMAC", key, challenge);
             this._rfbCredentials.newHomeAuthResponse = new Uint8Array(response);
+            delete this._rfbCredentials.password;
         } catch (err) {
             this._fail("NewHome authentication failed: " + err);
             return;
