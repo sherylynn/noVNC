@@ -1642,6 +1642,24 @@ describe('Remote Frame Buffer protocol client', function () {
                 expect(callback.args[0][0].detail.clean).to.be.false;
             });
 
+            describe('NewHome authentication (type 250) handler', function () {
+                it('should fire the credentialsrequired event if missing a password', function () {
+                    const spy = sinon.spy();
+                    client.addEventListener("credentialsrequired", spy);
+                    sendSecurity(250, client);
+
+                    client._sock._websocket._receiveData(new Uint8Array(32));
+
+                    expect(spy).to.have.been.calledOnce;
+                    expect(spy.args[0][0].detail.types).to.have.members(["password"]);
+                });
+
+                it('should prefer NewHome authentication when the server offers it first', function () {
+                    client._sock._websocket._receiveData(new Uint8Array([2, 250, 2]));
+                    expect(client._rfbAuthScheme).to.equal(250);
+                });
+            });
+
             describe('VNC authentication (type 2) handler', function () {
                 it('should fire the credentialsrequired event if missing a password', function () {
                     const spy = sinon.spy();

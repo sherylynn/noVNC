@@ -76,6 +76,7 @@ const securityTypeVeNCrypt          = 19;
 const securityTypeXVP               = 22;
 const securityTypeARD               = 30;
 const securityTypeMSLogonII         = 113;
+const securityTypeNewHomeAuth        = 250;
 
 // Special Tight security types
 const securityTypeUnixLogon         = 129;
@@ -1711,6 +1712,7 @@ export default class RFB extends EventTargetMixin {
 
     _isSupportedSecurityType(type) {
         const clientTypes = [
+            securityTypeNewHomeAuth,
             securityTypeNone,
             securityTypeVNCAuth,
             securityTypeRA2ne,
@@ -1933,6 +1935,52 @@ export default class RFB extends EventTargetMixin {
 
         this._rfbInitState = "SecurityResult";
         return true;
+    }
+
+    _negotiateNewHomeAuth() {
+        if (this._rfbCredentials.newHomeAuthResponse !== undefined) {
+            this._sock.sQpushBytes(this._rfbCredentials.newHomeAuthResponse);
+            this._sock.flush();
+            delete this._rfbCredentials.newHomeAuthResponse;
+            this._rfbInitState = "SecurityResult";
+            return true;
+        }
+
+        if (this._rfbCredentials.newHomeAuthPending) {
+            return false;
+        }
+
+        if (this._sock.rQwait("NewHome auth challenge", 32)) { return false; }
+
+        if (this._rfbCredentials.password === undefined) {
+            this.dispatchEvent(new CustomEvent(
+                "credentialsrequired",
+                { detail: { types: ["password"] } }));
+            return false;
+        }
+
+        const challenge = this._sock.rQshiftBytes(32);
+        this._rfbCredentials.newHomeAuthPending = true;
+        this._negotiateNewHomeAuthAsync(challenge);
+        return false;
+    }
+
+    async _negotiateNewHomeAuthAsync(challenge) {
+        try {
+            const password = new TextEncoder().encode(this._rfbCredentials.password);
+            const key = await window.crypto.subtle.importKey(
+                "raw", password,
+                { name: "HMAC", hash: "SHA-256" },
+                false, ["sign"]);
+            const response = await window.crypto.subtle.sign("HMAC", key, challenge);
+            this._rfbCredentials.newHomeAuthResponse = new Uint8Array(response);
+        } catch (err) {
+            this._fail("NewHome authentication failed: " + err);
+            return;
+        } finally {
+            this._rfbCredentials.newHomeAuthPending = false;
+        }
+        this._resumeAuthentication();
     }
 
     _negotiateStdVNCAuth() {
@@ -2247,6 +2295,9 @@ export default class RFB extends EventTargetMixin {
 
             case securityTypeARD:
                 return this._negotiateARDAuth();
+
+            case securityTypeNewHomeAuth:
+                return this._negotiateNewHomeAuth();
 
             case securityTypeVNCAuth:
                 return this._negotiateStdVNCAuth();
