@@ -185,7 +185,12 @@ const UI = {
         UI.initSetting('host', '');
         UI.initSetting('port', 0);
         UI.initSetting('encrypt', (window.location.protocol === "https:"));
-        UI.initSetting('password');
+        // NewHome RFB credentials are secrets, not preferences. Never restore
+        // them from query/hash/localStorage/chrome sync; keep only the current
+        // page's reconnectPassword in memory after the user enters it.
+        WebUtil.eraseSetting('password');
+        WebUtil.setSetting('password', null);
+        UI.reconnectPassword = null;
         UI.initSetting('autoconnect', false);
         UI.initSetting('view_clip', false);
         // HTTP and HTTPS have separate localStorage. Migrate the old/default
