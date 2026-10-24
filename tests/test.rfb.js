@@ -1580,6 +1580,12 @@ describe('Remote Frame Buffer protocol client', function () {
                 expect(client._rfbInitState).to.equal('Authentication');
                 expect(client._negotiateAuthentication).to.have.been.calledOnce;
             });
+
+            it('should prefer NewHome auth when the server advertises it first', function () {
+                client._sock._websocket._receiveData(new Uint8Array([2, 250, 2]));
+                expect(client._rfbAuthScheme).to.equal(250);
+                expect(client._sock).to.have.sent(new Uint8Array([250]));
+            });
         });
 
         describe('Legacy authentication', function () {
@@ -1657,6 +1663,34 @@ describe('Remote Frame Buffer protocol client', function () {
                 it('should prefer NewHome authentication when the server offers it first', function () {
                     client._sock._websocket._receiveData(new Uint8Array([2, 250, 2]));
                     expect(client._rfbAuthScheme).to.equal(250);
+                });
+            });
+
+            describe('NewHome authentication (type 250) handler', function () {
+                it('should fire the credentialsrequired event if missing a password', function () {
+                    const spy = sinon.spy();
+                    client.addEventListener("credentialsrequired", spy);
+                    sendSecurity(250, client);
+
+                    client._sock._websocket._receiveData(new Uint8Array(32));
+
+                    expect(spy).to.have.been.calledOnce;
+                    expect(spy.args[0][0].detail.types).to.have.members(["password"]);
+                });
+
+                it('should use the full UTF-8 password for HMAC-SHA256', async function () {
+                    client._rfbCredentials.password = 'abcdefgh-extra-密码';
+                    const challenge = new Uint8Array(32);
+                    for (let i = 0; i < challenge.length; i++) { challenge[i] = i; }
+
+                    await client._negotiateNewHomeAuthAsync(challenge);
+
+                    expect(Array.from(client._rfbCredentials.newHomeAuthResponse)).to.deep.equal([
+                        0x00, 0x0f, 0x81, 0xe7, 0xb5, 0x82, 0x24, 0xf5,
+                        0x0c, 0x3c, 0xac, 0x00, 0xf7, 0x1c, 0x9c, 0x4c,
+                        0xb6, 0xae, 0x65, 0x81, 0xb8, 0x2d, 0xe7, 0x06,
+                        0xf3, 0xa2, 0x9e, 0x01, 0x1a, 0xec, 0xd2, 0xde,
+                    ]);
                 });
             });
 
