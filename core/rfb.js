@@ -607,6 +607,13 @@ export default class RFB extends EventTargetMixin {
         // Monitor the embedding viewport. The canvas can change the internal
         // screen element's intrinsic size without any browser resize.
         this._resizeObserver.observe(this._target);
+        // Mobile Firefox can change the visual viewport on orientation/fullscreen
+        // transitions without immediately changing the layout viewport observed by
+        // ResizeObserver. Native NewHome remote-resize must follow the *visible*
+        // viewport, otherwise a stale landscape geometry can survive into portrait
+        // mode and leave the framebuffer squeezed into one corner.
+        window.addEventListener('orientationchange', this._eventHandlers.handleResize);
+        window.visualViewport?.addEventListener('resize', this._eventHandlers.handleResize);
 
         // Always grab focus on some kind of click event
         this._canvas.addEventListener("mousedown", this._eventHandlers.focusCanvas);
@@ -648,6 +655,8 @@ export default class RFB extends EventTargetMixin {
         this._canvas.removeEventListener("mousedown", this._eventHandlers.focusCanvas);
         this._canvas.removeEventListener("touchstart", this._eventHandlers.focusCanvas);
         this._resizeObserver.disconnect();
+        window.removeEventListener('orientationchange', this._eventHandlers.handleResize);
+        window.visualViewport?.removeEventListener('resize', this._eventHandlers.handleResize);
         this._keyboard.ungrab();
         this._gestures.detach();
         this._sock.close();
@@ -735,12 +744,14 @@ export default class RFB extends EventTargetMixin {
     }
 
     _saveExpectedClientSize() {
-        this._expectedClientWidth = this._target.clientWidth;
-        this._expectedClientHeight = this._target.clientHeight;
+        const size = this._screenSize();
+        this._expectedClientWidth = size.w;
+        this._expectedClientHeight = size.h;
     }
 
     _currentClientSize() {
-        return [this._target.clientWidth, this._target.clientHeight];
+        const size = this._screenSize();
+        return [size.w, size.h];
     }
 
     _clientHasExpectedSize() {
@@ -859,20 +870,45 @@ export default class RFB extends EventTargetMixin {
             }
         }
 
-        const rect = this._screen.getBoundingClientRect();
+        const viewport = this._newHomeViewportSize();
         const maxScale = Math.min(
-            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, rect.width),
-            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, rect.height));
+            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, viewport.w),
+            NEWHOME_MAX_REMOTE_DIMENSION / Math.max(1, viewport.h));
         scale = Math.max(0.5, Math.min(scale, maxScale));
 
         return { enabled: true, scale: scale };
     }
 
-    _newHomeRemoteGeometry() {
+    _newHomeViewportSize() {
         const rect = this._target.getBoundingClientRect();
+        if (this._newHomeUsesNativeRFB()) {
+            const visual = window.visualViewport;
+            if (visual && Number.isFinite(visual.width) && visual.width > 0 &&
+                Number.isFinite(visual.height) && visual.height > 0) {
+                const epsilon = 2;
+                const widthTracksViewport = Math.abs(rect.width - visual.width) <= epsilon;
+                const heightTracksViewport = Math.abs(rect.height - visual.height) <= epsilon;
+                const axesAreSwapped =
+                    Math.abs(rect.width - visual.height) <= epsilon &&
+                    Math.abs(rect.height - visual.width) <= epsilon;
+                // Full-page mobile viewers can transiently keep one stale layout
+                // axis across orientation/fullscreen changes. If either axis already
+                // tracks the visual viewport (or both are the swapped pre-rotation
+                // pair), trust the visual viewport for both dimensions. A genuinely
+                // embedded noVNC target matches neither axis and keeps its own rect.
+                if (widthTracksViewport || heightTracksViewport || axesAreSwapped) {
+                    return { w: visual.width, h: visual.height };
+                }
+            }
+        }
+        return { w: rect.width, h: rect.height };
+    }
+
+    _newHomeRemoteGeometry() {
+        const viewport = this._newHomeViewportSize();
         const hidpi = this._newHomeHiDPISettings();
         const scale = hidpi.enabled ? hidpi.scale : 1.0;
-        const width = Math.max(1, Math.floor(rect.width * scale));
+        const width = Math.max(1, Math.floor(viewport.w * scale));
         return {
             enabled: hidpi.enabled,
             scale: scale,
@@ -881,7 +917,7 @@ export default class RFB extends EventTargetMixin {
             // receive the browser-requested pixel width unchanged.
             width: this._newHomeUsesLegacyResizeMetadata() ?
                 Math.max(8, Math.floor(width / 8) * 8) : width,
-            height: Math.max(1, Math.floor(rect.height * scale)),
+            height: Math.max(1, Math.floor(viewport.h * scale)),
             dpi: Math.max(48, Math.min(65535, Math.round(NEWHOME_BASE_DPI * scale))),
         };
     }
@@ -991,10 +1027,13 @@ export default class RFB extends EventTargetMixin {
 
     // Gets the the size of the available screen
     _screenSize() {
-        // Measure the embedding container, not the flex child containing the
-        // canvas. The latter can temporarily reflect framebuffer dimensions.
-        let r = this._target.getBoundingClientRect();
-        return { w: r.width, h: r.height };
+        // Native NewHome is a full-screen mobile viewer. On Firefox Android the
+        // layout viewport can lag behind orientation/fullscreen transitions,
+        // while visualViewport already reflects the pixels the user can see.
+        // Use one geometry source for both remote resize and local autoscale so
+        // the framebuffer can never be resized from one viewport and rendered
+        // against another. Embedded/standard noVNC keeps the target rect.
+        return this._newHomeViewportSize();
     }
 
     _fixScrollbars() {

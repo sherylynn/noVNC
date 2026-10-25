@@ -1069,6 +1069,59 @@ describe('Remote Frame Buffer protocol client', function () {
             expect(client._display.autoscale).to.have.been.calledOnce;
             expect(client._display.autoscale).to.have.been.calledWith(70, 80);
         });
+
+        it('should use the visual viewport when a native full-page target has one stale axis', function () {
+            client._fbName = 'NewHome compositor';
+            container.style.width = '41px';
+            container.style.height = '80px';
+            const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+            Object.defineProperty(window, 'visualViewport', {
+                configurable: true,
+                value: {
+                    width: 41,
+                    height: 52,
+                    addEventListener() {},
+                    removeEventListener() {},
+                },
+            });
+            sinon.stub(client, '_newHomeHiDPISettings').returns({ enabled: false, scale: 1.0 });
+            try {
+                expect(client._newHomeViewportSize()).to.deep.equal({ w: 41, h: 52 });
+                expect(client._newHomeRemoteGeometry()).to.include({ width: 41, height: 52 });
+            } finally {
+                client._newHomeHiDPISettings.restore();
+                if (originalDescriptor) {
+                    Object.defineProperty(window, 'visualViewport', originalDescriptor);
+                } else {
+                    delete window.visualViewport;
+                }
+            }
+        });
+
+        it('should keep an embedded native target on its own geometry', function () {
+            client._fbName = 'NewHome compositor';
+            container.style.width = '40px';
+            container.style.height = '50px';
+            const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+            Object.defineProperty(window, 'visualViewport', {
+                configurable: true,
+                value: {
+                    width: 400,
+                    height: 700,
+                    addEventListener() {},
+                    removeEventListener() {},
+                },
+            });
+            try {
+                expect(client._newHomeViewportSize()).to.deep.equal({ w: 40, h: 50 });
+            } finally {
+                if (originalDescriptor) {
+                    Object.defineProperty(window, 'visualViewport', originalDescriptor);
+                } else {
+                    delete window.visualViewport;
+                }
+            }
+        });
     });
 
     describe('Remote resize', function () {
